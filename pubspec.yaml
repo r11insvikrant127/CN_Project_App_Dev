@@ -1,0 +1,35 @@
+name: qr_app2
+description: A Flutter application for student management with role-based access
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  intl: ^0.17.0
+  http: ^1.1.0
+  shared_preferences: ^2.2.2
+  device_info_plus: ^12.1.0
+  mobile_scanner: ^7.1.2
+  camera: ^0.11.2
+  fl_chart: ^1.1.1
+  connectivity_plus: ^5.0.2
+  local_auth: ^2.1.7
+  flutter_secure_storage: ^8.0.0
+  provider: ^6.1.1 
+  speech_to_text: ^7.3.0
+  sqflite: ^2.3.0
+  path: ^1.8.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true

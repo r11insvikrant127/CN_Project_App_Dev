@@ -1,4 +1,5 @@
-Design and implement a secure, role-based mobile + backend system (Flutter frontend + Flask backend + MongoDB Atlas) that scans QR codes or accepts manual roll numbers to return student information with strict role-based views and device-bound authentication. Requirements:
+Design and implement a secure, role-based mobile + backend system (Flutter frontend + Flask backend + MongoDB Atlas) that scans QR codes or accepts manual roll numbers to return student information with strict role-based views and device-bound authentication. 
+Requirements:
 	• Functionality: QR scan + manual roll entry.
 	• Roles & access:
 		○ 1 admin: full access to all student fields.

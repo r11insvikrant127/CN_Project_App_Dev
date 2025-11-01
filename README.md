@@ -176,7 +176,7 @@ All analytics are visualized using **charts and dashboards** built into the Flut
 
 ---
 
-```markdown
+
 ## 🧰 Security & Additional Features
 
 - 🔐 **Enterprise-grade JWT handling** and claim verification  

@@ -1,5 +1,3 @@
-//device_verification_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:http/http.dart' as http;
@@ -9,6 +7,7 @@ import 'role_selection_screen.dart';
 import 'biometric_auth_service.dart';
 
 const String kBaseUrl = "http://192.168.29.119:5000";
+//const String kBaseUrl = "http://10.20.55.59:5000";
 
 class DeviceVerificationScreen extends StatefulWidget {
   @override
@@ -29,8 +28,13 @@ class _DeviceVerificationScreenState extends State<DeviceVerificationScreen> {
   @override
   void initState() {
     super.initState();
+    _initializeBiometricService();
     _checkFingerprintAvailability();
     _checkBiometricSetup();
+  }
+
+  Future<void> _initializeBiometricService() async {
+    await BiometricAuthService.init();
   }
 
   void _checkFingerprintAvailability() async {
@@ -41,7 +45,8 @@ class _DeviceVerificationScreenState extends State<DeviceVerificationScreen> {
   }
 
   void _checkBiometricSetup() async {
-    final isSetup = await BiometricAuthService.isBiometricSetupComplete;
+    // For device verification, we'll check if any biometric is setup using a generic role
+    final isSetup = await BiometricAuthService.isBiometricSetupCompleteForRole('device_verification');
     setState(() {
       _isBiometricSetupComplete = isSetup;
     });
@@ -56,7 +61,7 @@ class _DeviceVerificationScreenState extends State<DeviceVerificationScreen> {
     );
   }
 
-  // FINGERPRINT AUTHENTICATION - Proper implementation
+  // FINGERPRINT AUTHENTICATION - Fixed implementation
   Future<void> _authenticateWithFingerprint() async {
     setState(() {
       _authMethod = 'fingerprint';
@@ -66,8 +71,9 @@ class _DeviceVerificationScreenState extends State<DeviceVerificationScreen> {
     });
 
     try {
-      // Step 1: Authenticate with biometrics
-      final Map<String, dynamic> result = await BiometricAuthService.getSessionTokenWithBiometric(
+      // Step 1: Authenticate with biometrics - using generic role for device verification
+      final Map<String, dynamic> result = await BiometricAuthService.getSessionTokenForRoleWithBiometric(
+        role: 'device_verification',
         reason: 'Authenticate to access Student Management System'
       );
       
@@ -95,7 +101,7 @@ class _DeviceVerificationScreenState extends State<DeviceVerificationScreen> {
             _statusMessage = 'Session expired. Please use device verification.';
           });
           // Clear invalid token
-          await BiometricAuthService.clearBiometricData();
+          await BiometricAuthService.clearBiometricDataForRole('device_verification');
         }
       } else {
         setState(() {
@@ -226,10 +232,8 @@ class _DeviceVerificationScreenState extends State<DeviceVerificationScreen> {
             throw Exception('No session token received from server');
           }
           
-          await BiometricAuthService.storeSessionToken(sessionToken);
-          
-          // ✅ ALSO STORE TOKEN IN SHARED PREFERENCES FOR IMMEDIATE USE
-          await prefs.setString('auth_token', sessionToken);
+          // Store session token for device verification role
+          await BiometricAuthService.storeSessionTokenForRole('device_verification', sessionToken);
           await prefs.setString('token_type', data['token_type'] as String? ?? 'bearer');
           
           setState(() {
@@ -472,10 +476,6 @@ class _DeviceVerificationScreenState extends State<DeviceVerificationScreen> {
       ),
     );
   }
-
-  // ... Rest of the methods remain the same as previous version ...
-  // (_buildAuthOptionCard, _buildStatusVisualization, _buildStatusInformation, 
-  // _buildActionButtons, _showContactDialog, dialog methods, etc.)
 
   Widget _buildAuthOptionCard({
     required String title,

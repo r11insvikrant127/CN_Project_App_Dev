@@ -1,6 +1,4 @@
-//role_selection_screen.dart
-
-// role_selection_screen.dart - WITH VOICE COMMANDS
+// role_selection_screen.dart 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
@@ -674,12 +672,12 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> with VoiceCom
       'logout': 'Log out and return to login',
       'go back': 'Return to previous screen',
       'help': 'Show this help dialog',
-      'dark': 'Switch to dark theme', // ADD THIS
-      'dark theme': 'Switch to dark theme', // ADD THIS
-      'light': 'Switch to light theme', // ADD THIS
-      'light theme': 'Switch to light theme', // ADD THIS
-      'switch theme': 'Toggle between dark and light themes', // ADD THIS
-      'toggle theme': 'Toggle between dark and light themes', // ADD THIS
+      'dark': 'Switch to dark theme',
+      'dark theme': 'Switch to dark theme', 
+      'light': 'Switch to light theme', 
+      'light theme': 'Switch to light theme', 
+      'switch theme': 'Toggle between dark and light themes',
+      'toggle theme': 'Toggle between dark and light themes', 
     };
   }
 }

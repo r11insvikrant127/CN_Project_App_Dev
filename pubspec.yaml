@@ -25,11 +25,30 @@ dependencies:
   speech_to_text: ^7.3.0
   sqflite: ^2.3.0
   path: ^1.8.3
+  # PDF Generation Packages
+  pdf: ^3.10.4
+  printing: ^5.11.2
+  path_provider: ^2.1.1
+  permission_handler: ^11.0.1
+  share_plus: ^7.0.1
+  flutter_downloader: ^1.11.7
+  flutter_local_notifications: ^17.0.0
+  open_filex: ^4.0.0
+  # ADD THIS FOR PROFILE PHOTO FEATURE:
+  image_picker: ^1.0.4
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^2.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/icon/icon_foreground.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/icon/icon_foreground.png"
 
 flutter:
   uses-material-design: true

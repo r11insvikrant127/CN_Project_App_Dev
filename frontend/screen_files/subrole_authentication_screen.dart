@@ -1,5 +1,3 @@
-//subrole_authentication_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -8,9 +6,11 @@ import 'student_lookup_screen.dart';
 import 'food_menu_screen.dart';
 import 'app_themes.dart';
 import 'voice_command_mixin.dart';
+import 'biometric_auth_service.dart';
+import 'biometric_auth_widget.dart';
 
 const String kBaseUrl = "http://192.168.29.119:5000";
-//const String kBaseUrl = "http://10.47.241.1:5000";
+//const String kBaseUrl = "http://10.20.55.59:5000";
 
 class SubroleAuthenticationScreen extends StatefulWidget {
   final String mainRole;
@@ -28,40 +28,70 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
   bool _isSuccess = false;
   bool _isError = false;
   String _lastSelectedHostel = 'A';
+  
+  // Biometric related variables
+  bool _showBiometricOption = false;
+  bool _isBiometricAuth = false;
+  String? _biometricToken;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkBiometricAvailability();
+    _initializeBiometricService();
+  }
+
+  Future<void> _initializeBiometricService() async {
+    await BiometricAuthService.init();
+  }
+
+  Future<void> _checkBiometricAvailability() async {
+    final status = await BiometricAuthService.checkBiometricStatus();
+    setState(() {
+      _showBiometricOption = status['hasBiometrics'] == true;
+    });
+  }
 
   @override
   Map<String, VoidCallback> getVoiceCommands() {
     Map<String, VoidCallback> commands = {
-      'hostel a': () => _showAuthenticationBottomSheet('A'),
-      'hostel b': () => _showAuthenticationBottomSheet('B'),
-      'hostel c': () => _showAuthenticationBottomSheet('C'),
-      'hostel d': () => _showAuthenticationBottomSheet('D'),
-      'hostel one': () => _showAuthenticationBottomSheet('A'),
-      'hostel two': () => _showAuthenticationBottomSheet('B'),
-      'hostel three': () => _showAuthenticationBottomSheet('C'),
-      'hostel four': () => _showAuthenticationBottomSheet('D'),
+      'hostel a': () => _showAuthenticationOptions('A'),
+      'hostel b': () => _showAuthenticationOptions('B'),
+      'hostel c': () => _showAuthenticationOptions('C'),
+      'hostel d': () => _showAuthenticationOptions('D'),
+      'hostel one': () => _showAuthenticationOptions('A'),
+      'hostel two': () => _showAuthenticationOptions('B'),
+      'hostel three': () => _showAuthenticationOptions('C'),
+      'hostel four': () => _showAuthenticationOptions('D'),
       
       // ENHANCED DIRECT AUTHENTICATION COMMANDS WITH MORE VARIATIONS
-      'authenticate a': () => _showAuthenticationBottomSheet('A'),
-      'authenticate b': () => _showAuthenticationBottomSheet('B'),
-      'authenticate c': () => _showAuthenticationBottomSheet('C'),
-      'authenticate d': () => _showAuthenticationBottomSheet('D'),
-      'authenticate hostel a': () => _showAuthenticationBottomSheet('A'),
-      'authenticate hostel b': () => _showAuthenticationBottomSheet('B'),
-      'authenticate hostel c': () => _showAuthenticationBottomSheet('C'),
-      'authenticate hostel d': () => _showAuthenticationBottomSheet('D'),
-      'auth a': () => _showAuthenticationBottomSheet('A'),
-      'auth b': () => _showAuthenticationBottomSheet('B'),
-      'auth c': () => _showAuthenticationBottomSheet('C'),
-      'auth d': () => _showAuthenticationBottomSheet('D'),
-      'open a': () => _showAuthenticationBottomSheet('A'),
-      'open b': () => _showAuthenticationBottomSheet('B'),
-      'open c': () => _showAuthenticationBottomSheet('C'),
-      'open d': () => _showAuthenticationBottomSheet('D'),
-      'select a': () => _showAuthenticationBottomSheet('A'),
-      'select b': () => _showAuthenticationBottomSheet('B'),
-      'select c': () => _showAuthenticationBottomSheet('C'),
-      'select d': () => _showAuthenticationBottomSheet('D'),
+      'authenticate a': () => _showAuthenticationOptions('A'),
+      'authenticate b': () => _showAuthenticationOptions('B'),
+      'authenticate c': () => _showAuthenticationOptions('C'),
+      'authenticate d': () => _showAuthenticationOptions('D'),
+      'authenticate hostel a': () => _showAuthenticationOptions('A'),
+      'authenticate hostel b': () => _showAuthenticationOptions('B'),
+      'authenticate hostel c': () => _showAuthenticationOptions('C'),
+      'authenticate hostel d': () => _showAuthenticationOptions('D'),
+      'auth a': () => _showAuthenticationOptions('A'),
+      'auth b': () => _showAuthenticationOptions('B'),
+      'auth c': () => _showAuthenticationOptions('C'),
+      'auth d': () => _showAuthenticationOptions('D'),
+      'open a': () => _showAuthenticationOptions('A'),
+      'open b': () => _showAuthenticationOptions('B'),
+      'open c': () => _showAuthenticationOptions('C'),
+      'open d': () => _showAuthenticationOptions('D'),
+      'select a': () => _showAuthenticationOptions('A'),
+      'select b': () => _showAuthenticationOptions('B'),
+      'select c': () => _showAuthenticationOptions('C'),
+      'select d': () => _showAuthenticationOptions('D'),
+      
+      // Biometric commands
+      'use fingerprint': _triggerBiometricAuth,
+      'use biometric': _triggerBiometricAuth,
+      'fingerprint': _triggerBiometricAuth,
+      'biometric': _triggerBiometricAuth,
+      'scan fingerprint': _triggerBiometricAuth,
       
       'go back': () => Navigator.of(context).pop(),
       'help': _showVoiceHelpDialog,
@@ -80,6 +110,7 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
 
     if (widget.mainRole == 'admin') {
       commands['authenticate admin'] = _authenticateAdmin;
+      commands['admin biometric'] = () => _showAuthenticationOptions('ALL');
     }
 
     if (widget.mainRole == 'canteen') {
@@ -104,6 +135,16 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
     showVoiceHelp();
   }
 
+  void _triggerBiometricAuth() {
+    if (widget.mainRole != 'admin' && _lastSelectedHostel.isNotEmpty) {
+      _showAuthenticationOptions(_lastSelectedHostel);
+    } else if (widget.mainRole == 'admin') {
+      _showAuthenticationOptions('ALL');
+    } else {
+      _showStatusMessage('Please select a hostel first (say "hostel A/B/C/D")', isError: true);
+    }
+  }
+
   void _triggerAuthentication() {
     // For admin role with direct auth
     if (widget.mainRole == 'admin' && _uniqueIdController.text.isNotEmpty) {
@@ -111,17 +152,17 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
     }
     // For other roles - if we have a hostel selected, authenticate directly
     else if (widget.mainRole != 'admin' && _lastSelectedHostel.isNotEmpty) {
-      _showAuthenticationBottomSheet(_lastSelectedHostel);
+      _showAuthenticationOptions(_lastSelectedHostel);
     } else {
       _showStatusMessage('Please select a hostel first (say "hostel A/B/C/D")', isError: true);
     }
   }
 
   void _showVoiceHelp() {
-    String commands = 'Available commands: "hostel a/b/c/d", "authenticate a/b/c/d", "auth a/b/c/d", "go back", "help"';
+    String commands = 'Available commands: "hostel a/b/c/d", "authenticate a/b/c/d", "auth a/b/c/d", "use fingerprint", "biometric", "go back", "help"';
     
     if (widget.mainRole == 'admin') {
-      commands += ', "authenticate admin"';
+      commands += ', "authenticate admin", "admin biometric"';
     }
     
     if (widget.mainRole == 'canteen') {
@@ -226,7 +267,7 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
                                     : Colors.blue,
                                   ),
                                   SizedBox(width: 8),
-                                  Expanded( // ADD EXPANDED TO PREVENT TEXT OVERFLOW
+                                  Expanded(
                                     child: Text(
                                       _statusMessage,
                                       style: TextStyle(
@@ -237,8 +278,8 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
                                         : Colors.blue[800],
                                         fontWeight: FontWeight.w500,
                                       ),
-                                      overflow: TextOverflow.ellipsis, // ADD OVERFLOW HANDLING
-                                      maxLines: 2, // LIMIT TO 2 LINES
+                                      overflow: TextOverflow.ellipsis,
+                                      maxLines: 2,
                                     ),
                                   ),
                                 ],
@@ -333,52 +374,90 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
               ),
               SizedBox(height: 10),
               Text(
-                'Enter your admin credentials to continue',
+                'Choose your authentication method',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
               SizedBox(height: 30),
+              
+              // Biometric Option for Admin
+              if (_showBiometricOption)
+                BiometricAuthWidget(
+                  role: 'admin',
+                  hostel: 'ALL',
+                  onSuccess: (token) {
+                    _handleBiometricSuccess('ALL', token);
+                  },
+                  onError: (error) {
+                    _showStatusMessage(error, isError: true);
+                  },
+                  onFallback: () {
+                    _showUniqueIdAuth('ALL');
+                  },
+                ),
+              
+              if (_showBiometricOption) 
+                Padding(
+                  padding: EdgeInsets.symmetric(vertical: 16),
+                  child: Row(
+                    children: [
+                      Expanded(child: Divider()),
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8),
+                        child: Text('OR', style: TextStyle(color: Colors.grey)),
+                      ),
+                      Expanded(child: Divider()),
+                    ],
+                  ),
+                ),
+              
+              // Unique ID Option for Admin
               Container(
                 width: double.infinity,
-                child: TextField(
-                  controller: _uniqueIdController,
-                  obscureText: true,
-                  decoration: InputDecoration(
-                    border: OutlineInputBorder(),
-                    labelText: 'Admin Unique ID',
-                    prefixIcon: Icon(Icons.lock),
-                  ),
-                ),
-              ),
-              SizedBox(height: 20),
-              // FIX THE BUTTON HERE - ADD CONSTRAINTS TO PREVENT OVERFLOW
-              Container(
-                width: double.infinity, // Ensure full width
-                constraints: BoxConstraints(
-                  minHeight: 50, // Ensure minimum height
-                ),
-                child: ElevatedButton(
-                  onPressed: _authenticateAdmin,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Theme.of(context).colorScheme.primary,
-                    foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                    padding: EdgeInsets.symmetric(vertical: 14, horizontal: 16), // Adjusted padding
-                  ),
-                  child: _isLoading 
-                      ? SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation(Theme.of(context).colorScheme.onPrimary),
+                child: Card(
+                  elevation: 2,
+                  child: InkWell(
+                    onTap: () {
+                      _showUniqueIdAuth('ALL');
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.blue[100],
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(Icons.vpn_key, color: Colors.blue[800]),
                           ),
-                        )
-                      : Text(
-                          'Authenticate as Admin', 
-                          style: TextStyle(fontSize: 16),
-                          textAlign: TextAlign.center, // Add text alignment
-                          overflow: TextOverflow.ellipsis, // Prevent text overflow
-                        ),
+                          SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Use Unique ID',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                                SizedBox(height: 2),
+                                Text(
+                                  'Authenticate with admin unique ID',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Icon(Icons.chevron_right, color: Colors.grey[400]),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ),
               SizedBox(height: 20),
@@ -394,7 +473,7 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
       elevation: 4,
       child: InkWell(
         onTap: () {
-          _showAuthenticationBottomSheet(hostel);
+          _showAuthenticationOptions(hostel);
         },
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -409,14 +488,197 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
                 color: Theme.of(context).colorScheme.onSurface,
               ),
             ),
+            SizedBox(height: 4),
+            if (_showBiometricOption)
+              FutureBuilder<bool>(
+                future: _isBiometricSetupForHostel(hostel),
+                builder: (context, snapshot) {
+                  if (snapshot.hasData && snapshot.data == true) {
+                    return Container(
+                      padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.green[50],
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.green[200]!),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.fingerprint, size: 10, color: Colors.green),
+                          SizedBox(width: 2),
+                          Text(
+                            'Fingerprint Ready',
+                            style: TextStyle(fontSize: 8, color: Colors.green[800], fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+                  return SizedBox.shrink();
+                },
+              ),
           ],
         ),
       ),
     );
   }
 
-  void _showAuthenticationBottomSheet(String hostel) {
+  Future<bool> _isBiometricSetupForHostel(String hostel) async {
+    final fullRole = '${widget.mainRole}_${hostel.toLowerCase()}';
+    return await BiometricAuthService.isBiometricSetupCompleteForRole(fullRole);
+  }
+
+  // NEW: Show authentication options (biometric vs unique ID)
+  void _showAuthenticationOptions(String hostel) {
     _lastSelectedHostel = hostel;
+    
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (BuildContext context) {
+        return Container(
+          padding: EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(20),
+              topRight: Radius.circular(20),
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Authentication Method',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.close),
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                    },
+                  ),
+                ],
+              ),
+              SizedBox(height: 16),
+              
+              if (_showBiometricOption) 
+                BiometricAuthWidget(
+                  role: widget.mainRole,
+                  hostel: hostel,
+                  onSuccess: (token) {
+                    Navigator.of(context).pop();
+                    _handleBiometricSuccess(hostel, token);
+                  },
+                  onError: (error) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(error)),
+                    );
+                  },
+                  onFallback: () {
+                    Navigator.of(context).pop();
+                    _showUniqueIdAuth(hostel);
+                  },
+                ),
+              
+              if (_showBiometricOption) 
+                Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Row(
+                    children: [
+                      Expanded(child: Divider()),
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8),
+                        child: Text('OR', style: TextStyle(color: Colors.grey)),
+                      ),
+                      Expanded(child: Divider()),
+                    ],
+                  ),
+                ),
+              
+              // Unique ID Option
+              Container(
+                width: double.infinity,
+                child: Card(
+                  elevation: 2,
+                  child: InkWell(
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      _showUniqueIdAuth(hostel);
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.blue[100],
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(Icons.vpn_key, color: Colors.blue[800]),
+                          ),
+                          SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Use Unique ID',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                                SizedBox(height: 2),
+                                Text(
+                                  'Authenticate with your unique identifier',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Icon(Icons.chevron_right, color: Colors.grey[400]),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              SizedBox(height: 20),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // NEW: Handle biometric authentication success
+  void _handleBiometricSuccess(String hostel, String token) {
+    setState(() {
+      _isLoading = true;
+      _isSuccess = false;
+      _isError = false;
+      _statusMessage = 'Biometric authentication successful...';
+      _isBiometricAuth = true;
+      _biometricToken = token;
+    });
+
+    // Use the token from biometric auth to proceed
+    _proceedWithBiometricAuthentication(hostel);
+  }
+
+  // MODIFIED: Show unique ID authentication (existing bottom sheet)
+  void _showUniqueIdAuth(String hostel) {
     TextEditingController bottomSheetController = TextEditingController();
     
     showModalBottomSheet(
@@ -440,7 +702,7 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    'Authentication Required',
+                    'Enter Unique ID',
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
@@ -508,21 +770,13 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
         );
       },
     ).then((_) {
-      // Clear the controller when bottom sheet is closed
       bottomSheetController.clear();
     });
   }
 
-  void _authenticateAdmin() {
-    if (_uniqueIdController.text.isEmpty) {
-      _showStatusMessage('Please enter admin unique ID', isError: true);
-      return;
-    }
-    _authenticateSubrole('ALL');
-  }
-
+  // MODIFIED: Update authentication method to store biometric token
   Future<void> _authenticateSubrole(String hostel) async {
-    if (_uniqueIdController.text.isEmpty) {
+    if (_uniqueIdController.text.isEmpty && !_isBiometricAuth) {
       _showStatusMessage('Please enter unique ID', isError: true);
       return;
     }
@@ -531,7 +785,7 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
       _isLoading = true;
       _isSuccess = false;
       _isError = false;
-      _statusMessage = 'Authenticating...';
+      _statusMessage = _isBiometricAuth ? 'Verifying biometric...' : 'Authenticating...';
     });
 
     try {
@@ -549,7 +803,8 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
           'device_id': deviceId,
           'main_role': widget.mainRole,
           'subrole': subrole,
-          'unique_id': _uniqueIdController.text,
+          'unique_id': _isBiometricAuth ? 'biometric_auth' : _uniqueIdController.text,
+          'biometric_verified': _isBiometricAuth,
         }),
       ).timeout(Duration(seconds: 10));
 
@@ -557,7 +812,14 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
         final data = json.decode(response.body);
         
         if (data['authenticated'] == true) {
-          await prefs.setString('access_token', data['access_token']);
+          final accessToken = data['access_token'];
+          
+          // Store session token for biometric auth if this was unique ID login
+          if (!_isBiometricAuth) {
+            await BiometricAuthService.storeSessionTokenForRole(subrole, accessToken);
+          }
+          
+          await prefs.setString('access_token', accessToken);
           await prefs.setString('current_role', subrole);
           await prefs.setString('current_hostel', hostel);
           await prefs.setString('username', data['username'] ?? subrole);
@@ -579,7 +841,7 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
           _showStatusMessage('Authentication failed. Please try again.', isError: true);
         }
       } else if (response.statusCode == 401) {
-        _showStatusMessage('Authentication failed. Please check your unique ID.', isError: true);
+        _showStatusMessage('Authentication failed. Please check your credentials.', isError: true);
       } else if (response.statusCode == 400) {
         _showStatusMessage('Invalid subrole. Please contact administrator.', isError: true);
       } else {
@@ -590,9 +852,26 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
     } finally {
       setState(() {
         _isLoading = false;
+        _isBiometricAuth = false;
+        _biometricToken = null;
       });
       _uniqueIdController.clear();
     }
+  }
+
+  // NEW: Helper method to proceed with biometric authentication
+  void _proceedWithBiometricAuthentication(String hostel) {
+    // For biometric auth, we need to call the authenticate method
+    // The biometric token is already stored, so we just need to trigger the auth flow
+    _authenticateSubrole(hostel);
+  }
+
+  void _authenticateAdmin() {
+    if (_uniqueIdController.text.isEmpty && !_isBiometricAuth) {
+      _showStatusMessage('Please enter admin unique ID', isError: true);
+      return;
+    }
+    _authenticateSubrole('ALL');
   }
 
   void _showStatusMessage(String message, {bool isSuccess = false, bool isError = false}) {
@@ -604,11 +883,11 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
   }
 
   Color _getRoleColor(String role) {
-  return AppThemes.getRoleColor(role, context);
+    return AppThemes.getRoleColor(role, context);
   }
 
- Color _getHostelColor(String hostel) {
-  return AppThemes.getHostelColor(hostel, context);
+  Color _getHostelColor(String hostel) {
+    return AppThemes.getHostelColor(hostel, context);
   }
 
   @override
@@ -645,6 +924,13 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
       'select c': 'Select Hostel C for authentication',
       'select d': 'Select Hostel D for authentication',
       
+      // Biometric commands
+      'use fingerprint': 'Use fingerprint authentication for selected hostel',
+      'use biometric': 'Use biometric authentication for selected hostel',
+      'fingerprint': 'Short command for fingerprint authentication',
+      'biometric': 'Short command for biometric authentication',
+      'scan fingerprint': 'Initiate fingerprint scanning',
+      
       'go back': 'Return to role selection screen',
       'help': 'Show this help dialog',
       'dark': 'Switch to dark theme',
@@ -662,6 +948,7 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
 
     if (widget.mainRole == 'admin') {
       descriptions['authenticate admin'] = 'Start admin authentication process';
+      descriptions['admin biometric'] = 'Use biometric authentication for admin';
     }
 
     if (widget.mainRole == 'canteen') {

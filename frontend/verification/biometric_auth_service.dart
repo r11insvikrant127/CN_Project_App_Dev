@@ -1,4 +1,4 @@
-//biometric_auth_service.dart
+// biometric_auth_service.dart - UPDATED
 
 import 'package:local_auth/local_auth.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -18,6 +18,7 @@ class BiometricAuthService {
   static const String _sessionTokenKey = 'session_token';
   static const String _biometricEnabledKey = 'biometric_enabled';
   static const String _isBiometricSetupKey = 'biometric_setup_complete';
+  static const String _roleBiometricKey = 'biometric_role_';
 
   // Check if biometric is available
   static Future<Map<String, dynamic>> checkBiometricStatus() async {
@@ -50,37 +51,31 @@ class BiometricAuthService {
     }
   }
 
-  // Check if biometric is enabled
-  static bool get isBiometricEnabled {
-    return _prefs.getBool(_biometricEnabledKey) ?? false;
+  // Check if biometric is enabled for a specific role
+  static bool isBiometricEnabledForRole(String role) {
+    return _prefs.getBool('$_roleBiometricKey$role') ?? false;
   }
 
-  // Check if biometric setup is complete (user has stored a token)
-  static Future<bool> get isBiometricSetupComplete async {
-    final token = await _secureStorage.read(key: _sessionTokenKey);
-    return token != null && _prefs.getBool(_isBiometricSetupKey) == true;
-  }
-
-  // Enable/disable biometric authentication
-  static Future<void> setBiometricEnabled(bool enabled) async {
-    await _prefs.setBool(_biometricEnabledKey, enabled);
+  // Enable/disable biometric for a specific role
+  static Future<void> setBiometricEnabledForRole(String role, bool enabled) async {
+    await _prefs.setBool('$_roleBiometricKey$role', enabled);
     
     if (!enabled) {
-      // Clear secure storage when disabling biometric
-      await _secureStorage.delete(key: _sessionTokenKey);
-      await _prefs.setBool(_isBiometricSetupKey, false);
+      // Clear role-specific biometric data when disabling
+      await _secureStorage.delete(key: '${_sessionTokenKey}_$role');
     }
   }
 
-  // Store session token in secure storage (called after successful credential login)
-  static Future<void> storeSessionToken(String token) async {
-    await _secureStorage.write(key: _sessionTokenKey, value: token);
+  // Store session token for specific role in secure storage
+  static Future<void> storeSessionTokenForRole(String role, String token) async {
+    await _secureStorage.write(key: '${_sessionTokenKey}_$role', value: token);
+    await _prefs.setBool('$_roleBiometricKey$role', true);
     await _prefs.setBool(_isBiometricSetupKey, true);
-    await _prefs.setBool(_biometricEnabledKey, true);
   }
 
-  // Get session token from secure storage (requires biometric auth)
-  static Future<Map<String, dynamic>> getSessionTokenWithBiometric({
+  // Get session token for specific role (requires biometric auth)
+  static Future<Map<String, dynamic>> getSessionTokenForRoleWithBiometric({
+    required String role,
     String reason = 'Authenticate to access your account'
   }) async {
     try {
@@ -102,25 +97,26 @@ class BiometricAuthService {
           biometricOnly: true,
           stickyAuth: true,
           sensitiveTransaction: true,
-          useErrorDialogs: true, // Show system error dialogs
+          useErrorDialogs: true,
         ),
       );
 
       if (biometricResult) {
         // Biometric successful, retrieve token from secure storage
-        final token = await _secureStorage.read(key: _sessionTokenKey);
+        final token = await _secureStorage.read(key: '${_sessionTokenKey}_$role');
         
         if (token != null && token.isNotEmpty) {
           return {
             'success': true,
             'token': token,
-            'message': 'Authentication successful',
+            'message': 'Biometric authentication successful',
+            'role': role,
           };
         } else {
           return {
             'success': false,
             'token': null,
-            'message': 'No session token found. Please use device verification first.',
+            'message': 'No session token found for this role. Please use unique ID first.',
             'error': 'no_token',
           };
         }
@@ -128,12 +124,12 @@ class BiometricAuthService {
         return {
           'success': false,
           'token': null,
-          'message': 'Authentication cancelled or failed',
+          'message': 'Biometric authentication cancelled or failed',
           'error': 'authentication_failed',
         };
       }
     } catch (e) {
-      print('Biometric auth error: $e');
+      print('Biometric auth error for role $role: $e');
       
       String errorMessage = 'Authentication error';
       String errorType = 'unknown_error';
@@ -158,28 +154,35 @@ class BiometricAuthService {
     }
   }
 
-  // Get stored token without biometric (for immediate use after device verification)
-  static Future<String?> getStoredToken() async {
-    try {
-      return await _secureStorage.read(key: _sessionTokenKey);
-    } catch (e) {
-      print('Error reading stored token: $e');
-      return null;
-    }
+  // Check if biometric setup is complete for a role
+  static Future<bool> isBiometricSetupCompleteForRole(String role) async {
+    final token = await _secureStorage.read(key: '${_sessionTokenKey}_$role');
+    return token != null && _prefs.getBool('$_roleBiometricKey$role') == true;
+  }
+
+  // Clear biometric data for specific role
+  static Future<void> clearBiometricDataForRole(String role) async {
+    await _secureStorage.delete(key: '${_sessionTokenKey}_$role');
+    await _prefs.setBool('$_roleBiometricKey$role', false);
   }
 
   // Clear all biometric data
-  static Future<void> clearBiometricData() async {
-    await _secureStorage.delete(key: _sessionTokenKey);
+  static Future<void> clearAllBiometricData() async {
+    final allKeys = await _secureStorage.readAll();
+    for (final key in allKeys.keys) {
+      if (key.startsWith(_sessionTokenKey)) {
+        await _secureStorage.delete(key: key);
+      }
+    }
     await _prefs.setBool(_isBiometricSetupKey, false);
     await _prefs.setBool(_biometricEnabledKey, false);
-  }
-
-  // Check if we have a valid session (for auto-login)
-  static Future<bool> hasValidSession() async {
-    if (!isBiometricEnabled) return false;
     
-    final token = await _secureStorage.read(key: _sessionTokenKey);
-    return token != null && token.isNotEmpty;
+    // Clear all role-specific biometric settings
+    final keys = _prefs.getKeys();
+    for (final key in keys) {
+      if (key.startsWith(_roleBiometricKey)) {
+        await _prefs.remove(key);
+      }
+    }
   }
 }

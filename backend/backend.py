@@ -1,5 +1,3 @@
-//backend.py
-
 from flask import Flask, request, jsonify
 from flask_pymongo import PyMongo
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
@@ -76,14 +74,14 @@ SUBROLE_IDS = {
 }
 
 
-# CORRECTED: Function to cleanup old movement records (older than 30 days for monthly reports)
+# CORRECTED: Function to cleanup old movement records (older than 6 months)
 def cleanup_old_movement_records():
     try:
-        # Changed from 7 days to 30 days to preserve monthly data
-        cutoff_time = datetime.now() - timedelta(days=30)
+        # Changed from 30 days to 6 months (180 days)
+        cutoff_time = datetime.now() - timedelta(days=180)
         print(f"🔄 Cleaning up movement records older than: {cutoff_time}")
         
-        # Update all students to remove in_out_records older than 30 days
+        # Update all students to remove in_out_records older than 6 months
         result = mongo.db.students.update_many(
             {},
             {'$pull': {
@@ -98,6 +96,56 @@ def cleanup_old_movement_records():
     except Exception as e:
         print(f"❌ Error during cleanup: {e}")
 
+
+def comprehensive_data_cleanup():
+    """Clean up all old data older than 6 months"""
+    try:
+        cutoff_time = datetime.now() - timedelta(days=180)
+        print(f"🧹 Starting comprehensive data cleanup for records older than: {cutoff_time}")
+        
+        cleanup_stats = {}
+        
+        # 1. Clean old movement records from students
+        result_students = mongo.db.students.update_many(
+            {},
+            {'$pull': {
+                'in_out_records': {
+                    'out_time': {'$lt': cutoff_time}
+                }
+            }}
+        )
+        cleanup_stats['student_records_cleaned'] = result_students.modified_count
+        
+        # 2. Clean old canteen visits (keep for analytics but remove very old ones)
+        result_canteen = mongo.db.canteen_visits.delete_many({
+            'timestamp': {'$lt': cutoff_time}
+        })
+        cleanup_stats['canteen_visits_deleted'] = result_canteen.deleted_count
+        
+        # 3. Clean old security logs (keep only 6 months for audit)
+        result_security = mongo.db.security_logs.delete_many({
+            'timestamp': {'$lt': cutoff_time}
+        })
+        cleanup_stats['security_logs_deleted'] = result_security.deleted_count
+        
+        # 4. Clean old realtime alerts (keep only recent alerts)
+        result_alerts = mongo.db.realtime_alerts.delete_many({
+            'timestamp': {'$lt': cutoff_time}
+        })
+        cleanup_stats['alerts_deleted'] = result_alerts.deleted_count
+        
+        # 5. Clean old admin scans
+        result_admin_scans = mongo.db.admin_scans.delete_many({
+            'timestamp': {'$lt': cutoff_time}
+        })
+        cleanup_stats['admin_scans_deleted'] = result_admin_scans.deleted_count
+        
+        print(f"✅ Comprehensive cleanup completed: {cleanup_stats}")
+        return cleanup_stats
+        
+    except Exception as e:
+        print(f"❌ Error during comprehensive cleanup: {e}")
+        return {'error': str(e)}
 
 # Database initialization function
 def initialize_database():
@@ -116,8 +164,8 @@ def initialize_database():
         mongo.db.weekly_reports.create_index([('week_number', 1), ('year', 1)])
         mongo.db.canteen_visits.create_index([('timestamp', -1)])
         mongo.db.realtime_alerts.create_index([('timestamp', -1)])
-        mongo.db.students.create_index([('roll_no', 1)])
-        mongo.db.devices.create_index([('device_id', 1)])
+        mongo.db.students.create_index([('roll_no', 1)], unique=True)
+        mongo.db.devices.create_index([('device_id', 1)], unique=True)
         mongo.db.security_logs.create_index([('timestamp', -1)])
         
         print("✅ Database initialization completed")
@@ -403,9 +451,10 @@ def authenticate_subrole():
     main_role = data.get('main_role')
     subrole = data.get('subrole')
     unique_id = data.get('unique_id')
+    biometric_verified = data.get('biometric_verified', False)
     ip_address = get_remote_address()
     
-    print(f"🔐 Subrole authentication attempt: {subrole}")
+    print(f"🔐 Subrole authentication attempt: {subrole}, biometric: {biometric_verified}")
     
     # Check lockout
     lockout_key = f"lockout:{ip_address}"
@@ -418,7 +467,7 @@ def authenticate_subrole():
                 'locked': True
             }), 429
     
-    # Verify device from database instead of hardcoded list
+    # Verify device from database
     device = mongo.db.devices.find_one({'device_id': device_id, 'status': 'active'})
     
     if not device:
@@ -428,47 +477,53 @@ def authenticate_subrole():
             'message': 'Device not verified or inactive'
         }), 401
     
-    # Verify unique ID for the subrole
-    expected_id = SUBROLE_IDS.get(subrole)
-    if not expected_id:
-        return jsonify({
-            'authenticated': False,
-            'message': 'Invalid subrole'
-        }), 400
-    
-    if unique_id != expected_id:
-        log_security_event('subrole_auth_failed', subrole, device_id, ip_address, {'reason': 'invalid_credentials'})
-        
-        # Track failed attempt
-        attempt_key = f"attempts:{ip_address}:{device_id}:{subrole}"
-        if attempt_key not in login_attempts:
-            login_attempts[attempt_key] = []
-        
-        login_attempts[attempt_key].append(time.time())
-        
-        # Check if max attempts reached
-        recent_attempts = [attempt for attempt in login_attempts[attempt_key] if time.time() - attempt < 900]
-        if len(recent_attempts) >= MAX_LOGIN_ATTEMPTS:
-            login_attempts[lockout_key] = time.time()
+    # If biometric verified, skip unique ID check
+    if biometric_verified:
+        print(f"✅ Biometric authentication verified for {subrole}")
+        # You might want to add additional biometric-specific validation here
+        # For now, we'll trust the biometric verification
+        pass
+    else:
+        # Verify unique ID for the subrole (existing logic)
+        expected_id = SUBROLE_IDS.get(subrole)
+        if not expected_id:
             return jsonify({
                 'authenticated': False,
-                'message': 'Too many failed attempts. Account locked for 15 minutes.',
-                'locked': True
-            }), 429
+                'message': 'Invalid subrole'
+            }), 400
+        
+        if unique_id != expected_id:
+            log_security_event('subrole_auth_failed', subrole, device_id, ip_address, {'reason': 'invalid_credentials'})
             
-        return jsonify({
-            'authenticated': False,
-            'message': 'Invalid unique ID'
-        }), 401
+            # Track failed attempt
+            attempt_key = f"attempts:{ip_address}:{device_id}:{subrole}"
+            if attempt_key not in login_attempts:
+                login_attempts[attempt_key] = []
+            
+            login_attempts[attempt_key].append(time.time())
+            
+            # Check if max attempts reached
+            recent_attempts = [attempt for attempt in login_attempts[attempt_key] if time.time() - attempt < 900]
+            if len(recent_attempts) >= MAX_LOGIN_ATTEMPTS:
+                login_attempts[lockout_key] = time.time()
+                return jsonify({
+                    'authenticated': False,
+                    'message': 'Too many failed attempts. Account locked for 15 minutes.',
+                    'locked': True
+                }), 429
+                
+            return jsonify({
+                'authenticated': False,
+                'message': 'Invalid unique ID'
+            }), 401
     
     # Clear login attempts on success
     attempt_key = f"attempts:{ip_address}:{device_id}:{subrole}"
     if attempt_key in login_attempts:
         del login_attempts[attempt_key]
     
-    # Create JWT token with string identity (required by flask_jwt_extended)
+    # Create JWT token
     identity_string = f"{device_id}:{subrole}"
-
     access_token = create_access_token(identity=identity_string)
     
     # Get user info from database
@@ -478,9 +533,10 @@ def authenticate_subrole():
         'hostel': subrole.split('_')[1].upper() if '_' in subrole else 'ALL'
     }
     
-    log_security_event('subrole_login_success', subrole, device_id, ip_address)
+    auth_method = 'biometric' if biometric_verified else 'unique_id'
+    log_security_event('subrole_login_success', subrole, device_id, ip_address, {'method': auth_method})
     
-    print(f"✅ Subrole authentication successful: {subrole}")
+    print(f"✅ Subrole authentication successful: {subrole} via {auth_method}")
     
     return jsonify({
         'authenticated': True,
@@ -488,7 +544,8 @@ def authenticate_subrole():
         'username': user_info['username'],
         'role': user_info['role'],
         'hostel': user_info['hostel'],
-        'message': 'Authentication successful'
+        'message': 'Authentication successful',
+        'auth_method': auth_method
     }), 200
 
 # Admin logout endpoint with session cleanup
@@ -570,12 +627,14 @@ def cleanup_expired_data():
     except Exception as e:
         print(f"❌ Error during data cleanup: {e}")
 
-# Schedule cleanup to run every hour
+# Schedule comprehensive cleanup to run monthly instead of the current cleanup
 scheduler.add_job(
-    func=cleanup_expired_data,
-    trigger='interval',
-    hours=1,
-    id='security_data_cleanup'
+    func=comprehensive_data_cleanup,
+    trigger='cron',  # Use cron trigger for monthly scheduling
+    day=1,  # 1st day of every month
+    hour=2,  # 2 AM
+    minute=0,
+    id='monthly_data_cleanup'
 )
 
 # Also run cleanup when the app starts for any stale records
@@ -583,6 +642,131 @@ cleanup_old_movement_records()
 
 # Shut down the scheduler when exiting the app
 atexit.register(lambda: scheduler.shutdown())
+
+# Manual cleanup endpoint with 6 months parameter
+@app.route('/api/admin/cleanup-data', methods=['POST'])
+@jwt_required()
+def manual_cleanup_data():
+    try:
+        identity_string = get_jwt_identity()
+        if ':' in identity_string:
+            device_id, user_role = identity_string.split(':', 1)
+            if user_role != 'admin':
+                return jsonify({'message': 'Admin access required'}), 403
+        
+        data = request.get_json() or {}
+        months = data.get('months', 6)  # Default to 6 months
+        
+        # Calculate cutoff time based on months parameter
+        cutoff_time = datetime.now() - timedelta(days=months*30)
+        
+        print(f"🧹 Manual cleanup requested for data older than {months} months ({cutoff_time})")
+        
+        # Perform comprehensive cleanup with custom cutoff
+        cleanup_stats = comprehensive_data_cleanup_custom(cutoff_time)
+        
+        # Log the cleanup event
+        log_security_event(
+            'manual_data_cleanup', 
+            'admin', 
+            device_id, 
+            get_remote_address(),
+            {'months': months, 'cutoff_time': cutoff_time, 'stats': cleanup_stats}
+        )
+        
+        return jsonify({
+            'message': f'Data cleanup completed for records older than {months} months',
+            'cutoff_time': cutoff_time.isoformat(),
+            'cleanup_stats': cleanup_stats
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'message': f'Error during cleanup: {str(e)}'}), 500
+
+def comprehensive_data_cleanup_custom(cutoff_time):
+    """Clean up all old data older than specified cutoff time"""
+    try:
+        print(f"🧹 Custom cleanup for records older than: {cutoff_time}")
+        
+        cleanup_stats = {}
+        
+        # Clean all collections with the custom cutoff time
+        result_students = mongo.db.students.update_many(
+            {},
+            {'$pull': {
+                'in_out_records': {
+                    'out_time': {'$lt': cutoff_time}
+                }
+            }}
+        )
+        cleanup_stats['student_records_cleaned'] = result_students.modified_count
+        
+        result_canteen = mongo.db.canteen_visits.delete_many({
+            'timestamp': {'$lt': cutoff_time}
+        })
+        cleanup_stats['canteen_visits_deleted'] = result_canteen.deleted_count
+        
+        result_security = mongo.db.security_logs.delete_many({
+            'timestamp': {'$lt': cutoff_time}
+        })
+        cleanup_stats['security_logs_deleted'] = result_security.deleted_count
+        
+        result_alerts = mongo.db.realtime_alerts.delete_many({
+            'timestamp': {'$lt': cutoff_time}
+        })
+        cleanup_stats['alerts_deleted'] = result_alerts.deleted_count
+        
+        result_admin_scans = mongo.db.admin_scans.delete_many({
+            'timestamp': {'$lt': cutoff_time}
+        })
+        cleanup_stats['admin_scans_deleted'] = result_admin_scans.deleted_count
+        
+        print(f"✅ Custom cleanup completed: {cleanup_stats}")
+        return cleanup_stats
+        
+    except Exception as e:
+        print(f"❌ Error during custom cleanup: {e}")
+        return {'error': str(e)}
+
+# Get cleanup statistics
+@app.route('/api/admin/cleanup-stats', methods=['GET'])
+@jwt_required()
+def get_cleanup_stats():
+    try:
+        identity_string = get_jwt_identity()
+        if ':' in identity_string:
+            device_id, user_role = identity_string.split(':', 1)
+            if user_role != 'admin':
+                return jsonify({'message': 'Admin access required'}), 403
+        
+        # Calculate data statistics
+        six_months_ago = datetime.now() - timedelta(days=180)
+        
+        stats = {
+            'data_older_than_6_months': {
+                'canteen_visits': mongo.db.canteen_visits.count_documents({
+                    'timestamp': {'$lt': six_months_ago}
+                }),
+                'security_logs': mongo.db.security_logs.count_documents({
+                    'timestamp': {'$lt': six_months_ago}
+                }),
+                'realtime_alerts': mongo.db.realtime_alerts.count_documents({
+                    'timestamp': {'$lt': six_months_ago}
+                }),
+                'admin_scans': mongo.db.admin_scans.count_documents({
+                    'timestamp': {'$lt': six_months_ago}
+                })
+            },
+            'next_scheduled_cleanup': '1st of every month at 2:00 AM',
+            'cleanup_cutoff_days': 180,
+            'current_time': datetime.now().isoformat(),
+            'cutoff_time': six_months_ago.isoformat()
+        }
+        
+        return jsonify(stats), 200
+        
+    except Exception as e:
+        return jsonify({'message': f'Error getting cleanup stats: {str(e)}'}), 500
 
 # Test endpoint to verify backend is working
 @app.route('/api/test/data', methods=['GET'])
@@ -846,8 +1030,8 @@ def handle_security_scan(selected_role):
                 }}
             )
             
-            # Check if time exceeded allowed limit (8 hours = 480 minutes)
-            max_allowed_time = 480
+            # Get student's custom allowed time or use default
+            max_allowed_time = student.get('custom_allowed_time_minutes', 480)
             response_data = {
                 'message': 'Check in recorded successfully',
                 'student_name': student.get('name', 'Unknown'),
@@ -858,19 +1042,22 @@ def handle_security_scan(selected_role):
                 'offline_sync': is_offline_sync
             }
             
+            # In the same function, update the disciplinary record creation:
             if time_spent > max_allowed_time:
                 disciplinary_record = {
                     'date': now,
                     'time': now.strftime('%H:%M'),
                     'description': f'Exceeded allowed time outside by {round(time_spent - max_allowed_time, 2)} minutes. '
-                                  f'Out at: {out_time.strftime("%Y-%m-%d %H:%M")}, '
-                                  f'In at: {now.strftime("%Y-%m-%d %H:%M")}',
-                    'action_taken': 'Warning issued for exceeding 8-hour limit',
+                                f'Out at: {out_time.strftime("%Y-%m-%d %H:%M")}, '
+                                f'In at: {now.strftime("%Y-%m-%d %H:%M")}, '
+                                f'Allowed: {max_allowed_time} minutes',
+                    'action_taken': f'Warning issued for exceeding {max_allowed_time}-minute limit',
                     'recorded_by': user_role,
                     'recorded_at': now,
                     'time_exceeded_minutes': round(time_spent - max_allowed_time, 2),
                     'auto_generated': True,
-                    'offline_sync': is_offline_sync
+                    'offline_sync': is_offline_sync,
+                    'allowed_time_limit': max_allowed_time
                 }
                 
                 mongo.db.students.update_one(
@@ -892,7 +1079,7 @@ def handle_security_scan(selected_role):
         print(f"❌ Error in security scan (offline sync): {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
 
-# Manual cleanup endpoint (for testing or manual trigger)
+# Update the existing manual cleanup endpoint to use 6 months
 @app.route('/api/admin/cleanup-records', methods=['POST'])
 @jwt_required()
 def manual_cleanup_records():
@@ -902,11 +1089,14 @@ def manual_cleanup_records():
             device_id, user_role = identity_string.split(':', 1)
             if user_role != 'admin':
                 return jsonify({'message': 'Admin access required'}), 403
-        else:
-            return jsonify({'message': 'Invalid token format'}), 401
         
-        cleanup_old_movement_records()
-        return jsonify({'message': 'Manual cleanup completed successfully'}), 200
+        # Use the comprehensive cleanup with 6 months default
+        cleanup_stats = comprehensive_data_cleanup()
+        
+        return jsonify({
+            'message': 'Manual cleanup completed successfully (6 months data retention)',
+            'cleanup_stats': cleanup_stats
+        }), 200
         
     except Exception as e:
         return jsonify({'message': f'Error during cleanup: {str(e)}'}), 500
@@ -2475,6 +2665,133 @@ def sync_security_scans():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+# Admin endpoint to get and set custom allowed time for students
+@app.route('/api/admin/student/allowed-time/<roll_no>', methods=['GET', 'POST'])
+@jwt_required()
+def manage_student_allowed_time(roll_no):
+    try:
+        identity_string = get_jwt_identity()
+        if ':' in identity_string:
+            device_id, user_role = identity_string.split(':', 1)
+            if user_role != 'admin':
+                return jsonify({'message': 'Admin access required'}), 403
+        else:
+            return jsonify({'message': 'Invalid token format'}), 401
+        
+        student = mongo.db.students.find_one({'roll_no': roll_no})
+        
+        if not student:
+            return jsonify({'message': 'Student not found'}), 404
+        
+        if request.method == 'GET':
+            # Get current allowed time (default 480 minutes/8 hours if not set)
+            allowed_time = student.get('custom_allowed_time_minutes', 480)
+            return jsonify({
+                'roll_no': roll_no,
+                'name': student.get('name', 'Unknown'),
+                'current_allowed_time': allowed_time,
+                'is_custom': 'custom_allowed_time_minutes' in student,
+                'default_time': 480
+            }), 200
+        
+        elif request.method == 'POST':
+            data = request.get_json()
+            new_allowed_time = data.get('allowed_time_minutes')
+            
+            if not new_allowed_time or not isinstance(new_allowed_time, (int, float)) or new_allowed_time <= 0:
+                return jsonify({'message': 'Valid allowed time in minutes is required'}), 400
+            
+            # Update student with custom allowed time
+            update_data = {
+                'custom_allowed_time_minutes': float(new_allowed_time),
+                'allowed_time_updated_at': datetime.now(),
+                'allowed_time_updated_by': 'admin'
+            }
+            
+            mongo.db.students.update_one(
+                {'roll_no': roll_no},
+                {'$set': update_data}
+            )
+            
+            # Log the change
+            log_security_event(
+                'allowed_time_updated', 
+                'admin', 
+                device_id, 
+                get_remote_address(),
+                {
+                    'roll_no': roll_no,
+                    'student_name': student.get('name', 'Unknown'),
+                    'old_time': student.get('custom_allowed_time_minutes', 480),
+                    'new_time': new_allowed_time
+                }
+            )
+            
+            return jsonify({
+                'message': f'Allowed time updated successfully to {new_allowed_time} minutes',
+                'roll_no': roll_no,
+                'student_name': student.get('name', 'Unknown'),
+                'new_allowed_time': new_allowed_time,
+                'updated_at': datetime.now().isoformat()
+            }), 200
+            
+    except Exception as e:
+        print(f"❌ Error in manage_student_allowed_time: {e}")
+        return jsonify({'message': f'Server error: {str(e)}'}), 500
+
+# Admin endpoint to reset to default allowed time
+@app.route('/api/admin/student/allowed-time/<roll_no>/reset', methods=['POST'])
+@jwt_required()
+def reset_student_allowed_time(roll_no):
+    try:
+        identity_string = get_jwt_identity()
+        if ':' in identity_string:
+            device_id, user_role = identity_string.split(':', 1)
+            if user_role != 'admin':
+                return jsonify({'message': 'Admin access required'}), 403
+        
+        student = mongo.db.students.find_one({'roll_no': roll_no})
+        
+        if not student:
+            return jsonify({'message': 'Student not found'}), 404
+        
+        # Remove custom allowed time to use default
+        mongo.db.students.update_one(
+            {'roll_no': roll_no},
+            {'$unset': {
+                'custom_allowed_time_minutes': "",
+                'allowed_time_updated_at': "",
+                'allowed_time_updated_by': ""
+            }}
+        )
+        
+        # Log the reset
+        log_security_event(
+            'allowed_time_reset', 
+            'admin', 
+            device_id, 
+            get_remote_address(),
+            {
+                'roll_no': roll_no,
+                'student_name': student.get('name', 'Unknown'),
+                'previous_time': student.get('custom_allowed_time_minutes', 480)
+            }
+        )
+        
+        return jsonify({
+            'message': 'Allowed time reset to default (480 minutes)',
+            'roll_no': roll_no,
+            'student_name': student.get('name', 'Unknown'),
+            'current_allowed_time': 480,
+            'reset_at': datetime.now().isoformat()
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error in reset_student_allowed_time: {e}")
+        return jsonify({'message': f'Server error: {str(e)}'}), 500
+
+
 @app.route('/api/sync/canteen-visits', methods=['POST'])
 @jwt_required()
 def sync_canteen_visits():
@@ -2533,7 +2850,17 @@ def sync_canteen_visits():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == "__main__":
+    # Also run cleanup when the app starts for any stale records
     print("🚀 Starting Student Management System API Server...")
     print("📊 Version 2.0 - With Enhanced Analytics and Reporting")
     print("🔗 Available at: http://0.0.0.0:5000")
+    print("🧹 Initializing data cleanup for records older than 6 months...")
+
+    # Run initial cleanup
+    try:
+        cleanup_stats = comprehensive_data_cleanup()
+        print(f"✅ Initial cleanup completed: {cleanup_stats}")
+    except Exception as e:
+        print(f"⚠️ Initial cleanup warning: {e}")
+
     app.run(host="0.0.0.0", port=5000, debug=True)

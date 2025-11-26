@@ -177,17 +177,53 @@ class VoiceCommandService {
       }
     }
     
-    // For hostel commands
-    if (normalizedText.contains('hostel')) {
-      if (normalizedText.contains(' b ') || normalizedText.contains('bee') || normalizedText.endsWith(' b')) {
-        return 'hostel b';
-      } else if (normalizedText.contains(' c ') || normalizedText.contains('see') || normalizedText.endsWith(' c')) {
-        return 'hostel c';
-      } else if (normalizedText.contains(' d ') || normalizedText.endsWith(' d')) {
-        return 'hostel d';
-      } else if (normalizedText.contains(' a ') || normalizedText.endsWith(' a')) {
-        return 'hostel a';
+    // For hostel commands - ENHANCED WITH NEW COMMANDS
+    if (normalizedText.contains('hostel') || 
+        normalizedText.contains('open') || 
+        normalizedText.contains('select') ||
+        normalizedText.contains('authenticate') ||
+        normalizedText.contains('auth')) {
+      if (normalizedText.contains(' b ') || normalizedText.contains('bee') || normalizedText.endsWith(' b') || normalizedText.contains('two')) {
+        return _findCommandVariation(commands, 'b');
+      } else if (normalizedText.contains(' c ') || normalizedText.contains('see') || normalizedText.endsWith(' c') || normalizedText.contains('three')) {
+        return _findCommandVariation(commands, 'c');
+      } else if (normalizedText.contains(' d ') || normalizedText.endsWith(' d') || normalizedText.contains('four')) {
+        return _findCommandVariation(commands, 'd');
+      } else if (normalizedText.contains(' a ') || normalizedText.endsWith(' a') || normalizedText.contains('one')) {
+        return _findCommandVariation(commands, 'a');
       }
+    }
+    
+    // NEW: Generic authentication command matching
+    if (normalizedText.contains('authenticate') || normalizedText.contains('auth') || 
+        normalizedText.contains('submit') || normalizedText.contains('confirm')) {
+      // Try to find any authentication command
+      for (final command in commandList) {
+        if (command.contains('authenticate') || command.contains('auth')) {
+          return command;
+        }
+      }
+    }
+    
+    // NEW: Security action matching
+    if (normalizedText.contains('student') || normalizedText.contains('check')) {
+      if (normalizedText.contains('out') || normalizedText.contains('exit')) {
+        return _findSecurityAction(commands, 'out');
+      } else if (normalizedText.contains('in') || normalizedText.contains('enter')) {
+        return _findSecurityAction(commands, 'in');
+      }
+    }
+    
+    // NEW: Time management matching for admin
+    if (normalizedText.contains('time') || normalizedText.contains('limit')) {
+      if (normalizedText.contains('manage') || normalizedText.contains('set') || normalizedText.contains('edit')) {
+        return _findTimeManagementCommand(commands);
+      }
+    }
+    
+    // NEW: Report viewing matching
+    if (normalizedText.contains('report') || normalizedText.contains('view report')) {
+      return _findReportCommand(commands);
     }
     
     return null;
@@ -199,7 +235,55 @@ class VoiceCommandService {
       'authenticate $letter',
       'auth $letter',
       'authenticate hostel $letter',
-      'hostel $letter'
+      'hostel $letter',
+      'open $letter',
+      'select $letter'
+    ];
+    
+    for (final variation in variations) {
+      if (commands.containsKey(variation)) {
+        return variation;
+      }
+    }
+    return null;
+  }
+
+  // NEW: Helper method to find security actions
+  String? _findSecurityAction(Map<String, VoidCallback> commands, String action) {
+    final variations = [
+      'check $action',
+      'student $action'
+    ];
+    
+    for (final variation in variations) {
+      if (commands.containsKey(variation)) {
+        return variation;
+      }
+    }
+    return null;
+  }
+
+  // NEW: Helper method to find time management commands
+  String? _findTimeManagementCommand(Map<String, VoidCallback> commands) {
+    final variations = [
+      'manage time',
+      'set allowed time',
+      'edit time limit'
+    ];
+    
+    for (final variation in variations) {
+      if (commands.containsKey(variation)) {
+        return variation;
+      }
+    }
+    return null;
+  }
+
+  // NEW: Helper method to find report commands
+  String? _findReportCommand(Map<String, VoidCallback> commands) {
+    final variations = [
+      'weekly report',
+      'view report'
     ];
     
     for (final variation in variations) {

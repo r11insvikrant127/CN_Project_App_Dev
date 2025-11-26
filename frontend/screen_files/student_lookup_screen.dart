@@ -1,5 +1,3 @@
-//student_lookup_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -15,9 +13,23 @@ import 'voice_command_mixin.dart';
 import 'local_db_helper.dart';
 import 'network_service.dart';
 import 'sync_service.dart';
+import 'pdf_report_service.dart';
+import 'package:printing/printing.dart';
+import 'package:flutter_downloader/flutter_downloader.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'dart:io';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:open_filex/open_filex.dart';
+import 'allowed_time_management_screen.dart';
+import 'profile_photo_service.dart';
+import 'profile_photo_dialog.dart';
+import '../main.dart'; // to access notificationPlugin
+
 
 const String kBaseUrl = "http://192.168.29.119:5000";
-//const String kBaseUrl = "http://10.47.241.1:5000";
+//const String kBaseUrl = "http://10.20.55.59:5000";
 
 class StudentLookupScreen extends StatefulWidget {
   final String selectedRole;
@@ -72,6 +84,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
   });
   }
 
+
+
   @override
   Map<String, VoidCallback> getVoiceCommands() {
     Map<String, VoidCallback> commands = {
@@ -92,11 +106,24 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
       'help': _showVoiceHelpDialog,
       'clear': _clearSearch,
       'sync records': _manualSync,
+      'generate pdf': _generateMovementLogsPDF,
+      'export logs': _generateMovementLogsPDF,
+      'create report': _generateMovementLogsPDF,
+      'download movements': _generateMovementLogsPDF,
+      'change profile photo': _showProfilePhotoDialog,
+      'update profile': _showProfilePhotoDialog,
+      'edit profile photo': _showProfilePhotoDialog,
     };
 
     if (widget.selectedRole.startsWith('super_')) {
       commands['weekly report'] = _navigateToWeeklyReport;
       commands['view report'] = _navigateToWeeklyReport;
+    }
+
+    if (widget.selectedRole == 'admin' && _studentData != null) {
+      commands['manage time'] = _navigateToAllowedTimeManagement;
+      commands['set allowed time'] = _navigateToAllowedTimeManagement;
+      commands['edit time limit'] = _navigateToAllowedTimeManagement;
     }
 
     // Security specific commands
@@ -135,6 +162,421 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     // Don't refresh if no student is being viewed
   }
   }
+
+  Future<void> _generateMovementLogsPDF() async {
+    if (_studentData == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Please search for a student first')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final movementRecords = _studentData!['in_out_records'] ?? [];
+
+      if (movementRecords.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No movement records found for this student')),
+        );
+        return;
+      }
+
+      print('📊 Generating PDF for ${movementRecords.length} records...');
+
+      // Generate PDF
+      final pdfService = PDFReportService();
+      final filePath = await pdfService.generateMovementLogsPDF(
+        movementRecords: movementRecords,
+        studentName: _studentData!['name'] ?? 'Unknown',
+        rollNo: _studentData!['roll_no'] ?? 'N/A',
+        hostel: _studentData!['hostel'] ?? 'N/A',
+      );
+
+      print('✅ PDF generated at: $filePath');
+
+      // Show success dialog with options
+      _showPDFSuccessDialog(filePath);
+
+    } catch (e) {
+      print('❌ PDF Generation Error: $e');
+      
+      // Show error dialog
+      showDialog(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: Row(
+              children: [
+                Icon(Icons.error, color: Colors.red),
+                SizedBox(width: 10),
+                Text('PDF Generation Failed'),
+              ],
+            ),
+            content: Text('Error: $e\n\nPlease try again.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text('OK'),
+              ),
+            ],
+          );
+        },
+      );
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> showDownloadCompleteNotification(String fileName, String path) async {
+    final androidDetails = AndroidNotificationDetails(
+      'download_channel',
+      'Downloads',
+      channelDescription: 'Notifies when a PDF file is saved',
+      importance: Importance.max,
+      priority: Priority.high,
+      playSound: true,
+      ticker: 'Download complete',
+    );
+
+    final notificationDetails =
+        NotificationDetails(android: androidDetails);
+
+    await notificationPlugin.show(
+      0,
+      'Download complete',
+      fileName,
+      notificationDetails,
+      payload: path,
+    );
+  }
+
+
+
+  Future<void> _downloadPDF(String filePath) async {
+    try {
+      final file = File(filePath);
+      if (!await file.exists()) {
+        throw Exception('PDF not found');
+      }
+
+      // Downloads folder
+      final downloadsDir = Directory('/storage/emulated/0/Download');
+      if (!await downloadsDir.exists()) {
+        await downloadsDir.create(recursive: true);
+      }
+
+      final fileName =
+          'Student_Movement_${_studentData!['roll_no']}_${DateTime.now().millisecondsSinceEpoch}.pdf';
+
+      final savedPath = '${downloadsDir.path}/$fileName';
+
+      await file.copy(savedPath);
+
+      // 🔔 Show notification
+      await showDownloadCompleteNotification(fileName, savedPath);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('PDF saved to Downloads'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      print('❌ Download error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to download file'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+
+
+
+  void _showPermissionDeniedDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Row(
+            children: [
+              Icon(Icons.warning, color: Colors.orange),
+              SizedBox(width: 10),
+              Text('Permission Required'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Storage permission is required to download PDF files.'),
+              SizedBox(height: 10),
+              Text('Please grant the permission in app settings to enable downloads.'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                openAppSettings(); // Open app settings so user can grant permission
+              },
+              child: Text('Open Settings'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showPDFSuccessDialog(String filePath) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: EdgeInsets.all(20),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface,
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black26,
+                  blurRadius: 20,
+                  offset: Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Success Icon
+                  Container(
+                    width: 80,
+                    height: 80,
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.1),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.green, width: 2),
+                    ),
+                    child: Icon(
+                      Icons.check_circle,
+                      color: Colors.green,
+                      size: 40,
+                    ),
+                  ),
+                  
+                  SizedBox(height: 20),
+                  
+                  // Title
+                  Text(
+                    'PDF Generated Successfully!',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  
+                  SizedBox(height: 12),
+                  
+                  // Description
+                  Text(
+                    'Your movement logs PDF has been generated and is ready to use.',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                      height: 1.4,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  
+                  SizedBox(height: 24),
+                  
+                  // Action Buttons - Fixed overflow by using Wrap or Column
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      if (constraints.maxWidth > 400) {
+                        // Horizontal layout for wider screens
+                        return Row(
+                          children: [
+                            Expanded(
+                              child: _buildDialogButton(
+                                icon: Icons.share,
+                                text: 'Share',
+                                color: Colors.blue,
+                                onPressed: () {
+                                  Navigator.of(context).pop();
+                                  _sharePDF(filePath);
+                                },
+                              ),
+                            ),
+                            SizedBox(width: 12),
+                            Expanded(
+                              child: _buildDialogButton(
+                                icon: Icons.visibility,
+                                text: 'View',
+                                color: Colors.purple,
+                                onPressed: () {
+                                  Navigator.of(context).pop();
+                                  _viewPDF(filePath);
+                                },
+                              ),
+                            ),
+                            SizedBox(width: 12),
+                            Expanded(
+                              child: _buildDialogButton(
+                                icon: Icons.download,
+                                text: 'Download',
+                                color: Colors.green,
+                                onPressed: () {
+                                  Navigator.of(context).pop();
+                                  _downloadPDF(filePath);
+                                },
+                              ),
+                            ),
+                          ],
+                        );
+                      } else {
+                        // Vertical layout for narrow screens
+                        return Column(
+                          children: [
+                            _buildDialogButton(
+                              icon: Icons.share,
+                              text: 'Share PDF',
+                              color: Colors.blue,
+                              onPressed: () {
+                                Navigator.of(context).pop();
+                                _sharePDF(filePath);
+                              },
+                            ),
+                            SizedBox(height: 12),
+                            _buildDialogButton(
+                              icon: Icons.visibility,
+                              text: 'View PDF',
+                              color: Colors.purple,
+                              onPressed: () {
+                                Navigator.of(context).pop();
+                                _viewPDF(filePath);
+                              },
+                            ),
+                            SizedBox(height: 12),
+                            _buildDialogButton(
+                              icon: Icons.download,
+                              text: 'Download PDF',
+                              color: Colors.green,
+                              onPressed: () {
+                                Navigator.of(context).pop();
+                                _downloadPDF(filePath);
+                              },
+                            ),
+                          ],
+                        );
+                      }
+                    },
+                  ),
+                  
+                  SizedBox(height: 16),
+                  
+                  // Close Button
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: Text(
+                      'Close',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // Helper method for beautiful buttons
+  Widget _buildDialogButton({
+    required IconData icon,
+    required String text,
+    required Color color,
+    required VoidCallback onPressed,
+  }) {
+    return ElevatedButton(
+      onPressed: onPressed,
+      style: ElevatedButton.styleFrom(
+        backgroundColor: color,
+        foregroundColor: Colors.white,
+        padding: EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        elevation: 2,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 20),
+          SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              text,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _sharePDF(String filePath) async {
+    try {
+      final pdfService = PDFReportService();
+      await pdfService.sharePDF(filePath);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error sharing PDF: $e')),
+      );
+    }
+  }
+
+  Future<void> _viewPDF(String filePath) async {
+    try {
+      final file = File(filePath);
+      final bytes = await file.readAsBytes();
+      
+      await Printing.layoutPdf(
+        onLayout: (format) async => bytes,
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error viewing PDF: $e')),
+      );
+    }
+  }
+
   void _scanQRCode() async {
     final result = await Navigator.push(
       context,
@@ -169,7 +611,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
   }
 
   void _showVoiceHelp() {
-    String commands = 'Available commands: "search student", "scan qr", "analytics", "ai analytics", "logout", "go back", "help", "clear", "sync records", "dark theme", "light theme", "toggle theme"';
+    String commands = 'Available commands: "search student", "scan qr", "analytics", "ai analytics", "logout", "go back", "help", "clear", "sync records", "generate pdf", "dark theme", "light theme", "toggle theme"';
     
     if (widget.selectedRole.startsWith('super_')) {
       commands += ', "weekly report"';
@@ -327,6 +769,38 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
   List<PopupMenuEntry<String>> _buildPopupMenuItems() {
     final List<PopupMenuEntry<String>> menuItems = [];
 
+    // In _buildPopupMenuItems method, add this for admin only:
+    if (widget.selectedRole == 'admin' && _studentData != null) {
+      menuItems.add(PopupMenuItem<String>(
+        value: 'manage_allowed_time',
+        child: Row(
+          children: [
+            Icon(Icons.timer, color: Colors.blue),
+            SizedBox(width: 8),
+            Text('Manage Allowed Time'),
+          ],
+        ),
+      ));
+      menuItems.add(PopupMenuDivider());
+    }
+
+    // PDF Generation option
+    if ((widget.selectedRole == 'admin' || widget.selectedRole.startsWith('super_')) && 
+        _studentData != null && 
+        _studentData!['in_out_records'] != null && 
+        _studentData!['in_out_records'].length > 0) {
+      menuItems.add(PopupMenuItem<String>(
+        value: 'generate_pdf',
+        child: Row(
+          children: [
+            Icon(Icons.picture_as_pdf, color: Colors.red),
+            SizedBox(width: 8),
+            Text('Generate PDF Report'),
+          ],
+        ),
+      ));
+    }
+
     // AI Analytics for admin/super  
     if (widget.selectedRole == 'admin' || widget.selectedRole.startsWith('super_')) {
       menuItems.add(PopupMenuItem<String>(
@@ -377,8 +851,14 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
 
   void _handleMenuSelection(String value) {
     switch (value) {
+      case 'generate_pdf':
+        _generateMovementLogsPDF();
+        break;
       case 'ai_analytics':
         _navigateToAIAnalytics();
+        break;
+      case 'manage_allowed_time': 
+        _navigateToAllowedTimeManagement();
         break;
       case 'weekly_report':
         _navigateToWeeklyReport();
@@ -449,6 +929,34 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     );
   }
 
+  void _navigateToAllowedTimeManagement() {
+    if (_studentData == null) return;
+    
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AllowedTimeManagementScreen(
+          rollNo: _studentData!['roll_no'], // Pass the current student's roll number
+          studentName: _studentData!['name'] ?? 'Unknown', // Optional: pass name for better UX
+        ),
+      ),
+    );
+  }
+
+
+  void _showProfilePhotoDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => ProfilePhotoDialog(
+        userRole: widget.selectedRole, // Pass the current role
+        onPhotoUpdated: () {
+          // Trigger UI refresh
+          setState(() {});
+        },
+      ),
+    );
+  }
+
   Widget _buildHeaderSection() {
     return Container(
       width: double.infinity,
@@ -473,26 +981,91 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
           children: [
             Row(
               children: [
-                CircleAvatar(
-                  backgroundColor: Colors.white.withOpacity(0.2),
-                  child: Icon(Icons.person, color: Colors.white),
+                // Profile Photo - Always Visible with StreamBuilder
+                GestureDetector(
+                  onTap: _showProfilePhotoDialog,
+                  child: StreamBuilder<Widget>(
+                    stream: ProfilePhotoService().getProfilePhotoWidgetStream(
+                      role: widget.selectedRole,
+                      size: 50,
+                      backgroundColor: Colors.white.withOpacity(0.3),
+                    ),
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return Container(
+                          width: 50,
+                          height: 50,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.3),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          ),
+                        );
+                      }
+
+                      if (snapshot.hasError) {
+                        return _buildDefaultHeaderPhoto();
+                      }
+
+                      return Container(
+                        width: 50,
+                        height: 50,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black26,
+                              blurRadius: 6,
+                              offset: Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: ClipOval(
+                          child: snapshot.data ?? _buildDefaultHeaderPhoto(),
+                        ),
+                      );
+                    },
+                  ),
                 ),
+
                 SizedBox(width: 12),
+
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Logged in as: $_username', 
-                           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                      Text(
+                        'Logged in as: $_username',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
                       SizedBox(height: 2),
-                      Text('${widget.selectedRole.toUpperCase()} • Hostel ${widget.selectedHostel.toUpperCase()}',
-                           style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 14)),
+                      Text(
+                        '${widget.selectedRole.toUpperCase()} • Hostel ${widget.selectedHostel.toUpperCase()}',
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.9),
+                          fontSize: 14,
+                        ),
+                      ),
                     ],
                   ),
                 ),
               ],
             ),
+
             SizedBox(height: 20),
+
+            // Search + QR Code Section
             Container(
               decoration: BoxDecoration(
                 color: Theme.of(context).cardColor,
@@ -549,8 +1122,9 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                         ),
                       ],
                     ),
+
                     SizedBox(height: 12),
-                    // In the header section where the QR scan button is:
+
                     Container(
                       width: double.infinity,
                       decoration: BoxDecoration(
@@ -560,11 +1134,14 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: TextButton.icon(
-                      onPressed: _scanQRCode,
+                        onPressed: _scanQRCode,
                         icon: Icon(Icons.qr_code_scanner, color: Colors.white),
-                        label: Text('Scan QR Code', style: TextStyle(color: Colors.white, fontSize: 16)),
+                        label: Text(
+                          'Scan QR Code',
+                          style: TextStyle(color: Colors.white, fontSize: 16),
+                        ),
                         style: TextButton.styleFrom(
-                            padding: EdgeInsets.symmetric(vertical: 12),
+                          padding: EdgeInsets.symmetric(vertical: 12),
                         ),
                       ),
                     ),
@@ -577,6 +1154,61 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
       ),
     );
   }
+
+
+  // Add this helper method (only one version)
+  Widget _buildDefaultHeaderPhoto() {
+    // Show role-specific default icon
+    IconData icon;
+    Color iconColor;
+    
+    switch (widget.selectedRole.toLowerCase()) {
+      case 'admin':
+        icon = Icons.admin_panel_settings;
+        iconColor = Colors.red;
+        break;
+      case 'super_a':
+      case 'super_b':
+      case 'super_c':
+      case 'super_d':
+        icon = Icons.supervisor_account;
+        iconColor = Colors.orange;
+        break;
+      case 'security_a':
+      case 'security_b':
+      case 'security_c':
+      case 'security_d':
+        icon = Icons.security;
+        iconColor = Colors.blue;
+        break;
+      case 'canteen_a':
+      case 'canteen_b':
+      case 'canteen_c':
+      case 'canteen_d':
+        icon = Icons.restaurant;
+        iconColor = Colors.green;
+        break;
+      default:
+        icon = Icons.person;
+        iconColor = Colors.white;
+    }
+    
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.3),
+        shape: BoxShape.circle,
+      ),
+      child: Center(
+        child: Icon(
+          icon,
+          color: iconColor,
+          size: 28,
+        ),
+      ),
+    );
+  }
+
+
 
   Widget _buildContentSection() {
     if (_isLoading) {
@@ -1253,46 +1885,51 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
       ),
       child: Padding(
         padding: EdgeInsets.all(24.0),
-        child: Row(
+        child: Column(
           children: [
-            Container(
-              width: 70,
-              height: 70,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  colors: [Colors.blue[500]!, Colors.purple[500]!],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black26,
-                    blurRadius: 8,
-                    offset: Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Icon(Icons.person, color: Colors.white, size: 32),
-            ),
-            SizedBox(width: 20),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _studentData!['name']?.toString() ?? 'Unknown',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: Theme.of(context).colorScheme.onSurface,
+            Row(
+              children: [
+                Container(
+                  width: 70,
+                  height: 70,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      colors: [Colors.blue[500]!, Colors.purple[500]!],
                     ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black26,
+                        blurRadius: 8,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
                   ),
-                  SizedBox(height: 6),
-                  _buildInfoChip(Icons.badge, 'Roll No: ${_studentData!['roll_no']?.toString() ?? 'N/A'}', Colors.blue),
-                  SizedBox(height: 4),
-                  _buildInfoChip(Icons.home, 'Hostel: ${_studentData!['hostel']?.toString() ?? 'N/A'}', Colors.green),
-                ],
-              ),
+                  child: Icon(Icons.person, color: Colors.white, size: 32),
+                ),
+                SizedBox(width: 20),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _studentData!['name']?.toString() ?? 'Unknown',
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
+                      SizedBox(height: 6),
+                      _buildInfoChip(Icons.badge, 'Roll No: ${_studentData!['roll_no']?.toString() ?? 'N/A'}', Colors.blue),
+                      SizedBox(height: 4),
+                      _buildInfoChip(Icons.home, 'Hostel: ${_studentData!['hostel']?.toString() ?? 'N/A'}', Colors.green),
+                    ],
+                  ),
+                ),
+              ],
             ),
+            SizedBox(height: 16),
           ],
         ),
       ),
@@ -2030,13 +2667,26 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
       'help': 'Show this help dialog',
       'clear': 'Clear current search results',
       'sync records': 'Sync offline records with server',
+      'generate pdf': 'Generate PDF report of movement logs',
+      'export logs': 'Export movement logs as PDF',
+      'create report': 'Create PDF report of student movements',
+      'download movements': 'Download movement records as PDF',
       'dark': 'Switch to dark theme',
       'dark theme': 'Switch to dark theme',
       'light': 'Switch to light theme',
       'light theme': 'Switch to light theme',
       'switch theme': 'Toggle between dark and light themes',
       'toggle theme': 'Toggle between dark and light themes',
+      'change profile photo': 'Open profile photo editor',
+      'update profile': 'Update your profile photo',
+      'edit profile photo': 'Edit your profile picture',
     };
+
+    if (widget.selectedRole == 'admin') {
+      descriptions['manage time'] = 'Manage allowed time for current student';
+      descriptions['set allowed time'] = 'Set custom time limit for student';
+      descriptions['edit time limit'] = 'Edit time limit for student';
+    }
 
     if (widget.selectedRole.startsWith('super_')) {
       descriptions['weekly report'] = 'View weekly report';

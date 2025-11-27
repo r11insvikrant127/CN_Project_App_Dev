@@ -1,7 +1,4 @@
 
-##  requirements.txt 
-
-```txt
 Flask==2.3.3
 Flask-PyMongo==2.3.0
 Flask-JWT-Extended==4.5.3

@@ -6,7 +6,6 @@ Flask-Limiter==3.3.0
 apscheduler==3.10.4
 pymongo==4.5.0
 Werkzeug==2.3.7
-numpy==2.1.0
 python-dateutil==2.8.2
 gunicorn
 dnspython

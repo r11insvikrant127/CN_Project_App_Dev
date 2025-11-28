@@ -1,10 +1,10 @@
 from flask import Flask, request, jsonify
-from flask_pymongo import PyMongo
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from bson import ObjectId
 from functools import wraps
 import os
 import hashlib
+import numpy as np
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
 from datetime import datetime, timedelta, date
@@ -13,6 +13,10 @@ import json
 import time
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+
+# NEW IMPORTS (required for Atlas + Render)
+from pymongo import MongoClient
+import certifi
 
 # Custom JSON encoder to handle datetime and ObjectId serialization
 class CustomJSONEncoder(json.JSONEncoder):
@@ -24,13 +28,36 @@ class CustomJSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 app = Flask(__name__)
-app.config['MONGO_URI'] = os.environ.get('MONGO_URI', 'mongodb://localhost:27017/student_management')
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)
 app.json_encoder = CustomJSONEncoder
 
-mongo = PyMongo(app)
+# ------------------------------
+# 🔥 FIXED MONGO CONNECTION (Render + Atlas SSL compatible)
+# ------------------------------
+
+MONGO_URL = os.environ.get(
+    "MONGO_URL",
+    "mongodb://localhost:27017/student_management"
+)
+
+try:
+    client = MongoClient(
+        MONGO_URL,
+        tls=True,
+        tlsCAFile=certifi.where(),          # IMPORTANT: Fixes SSL handshake issue
+        serverSelectionTimeoutMS=5000
+    )
+    db = client["student_management"]
+    print("✅ MongoDB connected successfully!")
+except Exception as e:
+    print("❌ MongoDB connection failed:", e)
+
+# ------------------------------
+# JWT
+# ------------------------------
 jwt = JWTManager(app)
+
 
 # CORRECTED: Initialize rate limiter
 limiter = Limiter(
@@ -80,7 +107,7 @@ def cleanup_old_movement_records():
         print(f"🔄 Cleaning up movement records older than: {cutoff_time}")
         
         # Update all students to remove in_out_records older than 6 months
-        result = mongo.db.students.update_many(
+        result = db.students.update_many(
             {},
             {'$pull': {
                 'in_out_records': {
@@ -104,7 +131,7 @@ def comprehensive_data_cleanup():
         cleanup_stats = {}
         
         # 1. Clean old movement records from students
-        result_students = mongo.db.students.update_many(
+        result_students = db.students.update_many(
             {},
             {'$pull': {
                 'in_out_records': {
@@ -115,25 +142,25 @@ def comprehensive_data_cleanup():
         cleanup_stats['student_records_cleaned'] = result_students.modified_count
         
         # 2. Clean old canteen visits (keep for analytics but remove very old ones)
-        result_canteen = mongo.db.canteen_visits.delete_many({
+        result_canteen = db.canteen_visits.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['canteen_visits_deleted'] = result_canteen.deleted_count
         
         # 3. Clean old security logs (keep only 6 months for audit)
-        result_security = mongo.db.security_logs.delete_many({
+        result_security = db.security_logs.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['security_logs_deleted'] = result_security.deleted_count
         
         # 4. Clean old realtime alerts (keep only recent alerts)
-        result_alerts = mongo.db.realtime_alerts.delete_many({
+        result_alerts = db.realtime_alerts.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['alerts_deleted'] = result_alerts.deleted_count
         
         # 5. Clean old admin scans
-        result_admin_scans = mongo.db.admin_scans.delete_many({
+        result_admin_scans = db.admin_scans.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['admin_scans_deleted'] = result_admin_scans.deleted_count
@@ -149,22 +176,22 @@ def comprehensive_data_cleanup():
 def initialize_database():
     try:
         # Create collections if they don't exist
-        collections = mongo.db.list_collection_names()
+        collections = db.list_collection_names()
         
         required_collections = ['weekly_reports', 'canteen_visits', 'realtime_alerts', 'admin_scans', 'security_logs']
         
         for collection in required_collections:
             if collection not in collections:
-                mongo.db.create_collection(collection)
+                db.create_collection(collection)
                 print(f"✅ Created {collection} collection")
         
         # Create indexes for better performance
-        mongo.db.weekly_reports.create_index([('week_number', 1), ('year', 1)])
-        mongo.db.canteen_visits.create_index([('timestamp', -1)])
-        mongo.db.realtime_alerts.create_index([('timestamp', -1)])
-        mongo.db.students.create_index([('roll_no', 1)], unique=True)
-        mongo.db.devices.create_index([('device_id', 1)], unique=True)
-        mongo.db.security_logs.create_index([('timestamp', -1)])
+        db.weekly_reports.create_index([('week_number', 1), ('year', 1)])
+        db.canteen_visits.create_index([('timestamp', -1)])
+        db.realtime_alerts.create_index([('timestamp', -1)])
+        db.students.create_index([('roll_no', 1)], unique=True)
+        db.devices.create_index([('device_id', 1)], unique=True)
+        db.security_logs.create_index([('timestamp', -1)])
         
         print("✅ Database initialization completed")
     except Exception as e:
@@ -185,7 +212,7 @@ def log_security_event(event_type, user_role, device_id, ip_address, details=Non
             'timestamp': datetime.now(),
             'details': details or {}
         }
-        mongo.db.security_logs.insert_one(log_entry)
+        db.security_logs.insert_one(log_entry)
     except Exception as e:
         print(f"❌ Error logging security event: {e}")
 
@@ -213,7 +240,7 @@ def admin_biometric_auth():
                 }), 429
         
         # Verify device
-        device = mongo.db.devices.find_one({'device_id': device_id, 'status': 'active'})
+        device = db.devices.find_one({'device_id': device_id, 'status': 'active'})
         if not device:
             log_security_event('device_verification_failed', 'admin', device_id, ip_address, {'reason': 'device_not_found'})
             return jsonify({'authenticated': False, 'message': 'Device not verified'}), 401
@@ -385,7 +412,7 @@ def verify_device():
             }), 429
     
     # Check if device exists in database
-    device = mongo.db.devices.find_one({'device_id': device_id, 'status': 'active'})
+    device = db.devices.find_one({'device_id': device_id, 'status': 'active'})
     
     if device:
         print("✅ Device verified successfully")
@@ -466,7 +493,7 @@ def authenticate_subrole():
             }), 429
     
     # Verify device from database
-    device = mongo.db.devices.find_one({'device_id': device_id, 'status': 'active'})
+    device = db.devices.find_one({'device_id': device_id, 'status': 'active'})
     
     if not device:
         log_security_event('device_verification_failed', subrole, device_id, ip_address)
@@ -583,7 +610,7 @@ def get_security_logs():
         
         # Get logs from last 7 days
         cutoff_time = datetime.now() - timedelta(days=7)
-        logs = list(mongo.db.security_logs.find(
+        logs = list(db.security_logs.find(
             {'timestamp': {'$gte': cutoff_time}},
             {'_id': 0}
         ).sort('timestamp', -1).limit(100))
@@ -689,7 +716,7 @@ def comprehensive_data_cleanup_custom(cutoff_time):
         cleanup_stats = {}
         
         # Clean all collections with the custom cutoff time
-        result_students = mongo.db.students.update_many(
+        result_students = db.students.update_many(
             {},
             {'$pull': {
                 'in_out_records': {
@@ -699,22 +726,22 @@ def comprehensive_data_cleanup_custom(cutoff_time):
         )
         cleanup_stats['student_records_cleaned'] = result_students.modified_count
         
-        result_canteen = mongo.db.canteen_visits.delete_many({
+        result_canteen = db.canteen_visits.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['canteen_visits_deleted'] = result_canteen.deleted_count
         
-        result_security = mongo.db.security_logs.delete_many({
+        result_security = db.security_logs.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['security_logs_deleted'] = result_security.deleted_count
         
-        result_alerts = mongo.db.realtime_alerts.delete_many({
+        result_alerts = db.realtime_alerts.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['alerts_deleted'] = result_alerts.deleted_count
         
-        result_admin_scans = mongo.db.admin_scans.delete_many({
+        result_admin_scans = db.admin_scans.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['admin_scans_deleted'] = result_admin_scans.deleted_count
@@ -742,16 +769,16 @@ def get_cleanup_stats():
         
         stats = {
             'data_older_than_6_months': {
-                'canteen_visits': mongo.db.canteen_visits.count_documents({
+                'canteen_visits': db.canteen_visits.count_documents({
                     'timestamp': {'$lt': six_months_ago}
                 }),
-                'security_logs': mongo.db.security_logs.count_documents({
+                'security_logs': db.security_logs.count_documents({
                     'timestamp': {'$lt': six_months_ago}
                 }),
-                'realtime_alerts': mongo.db.realtime_alerts.count_documents({
+                'realtime_alerts': db.realtime_alerts.count_documents({
                     'timestamp': {'$lt': six_months_ago}
                 }),
-                'admin_scans': mongo.db.admin_scans.count_documents({
+                'admin_scans': db.admin_scans.count_documents({
                     'timestamp': {'$lt': six_months_ago}
                 })
             },
@@ -803,7 +830,7 @@ def get_student_with_role(roll_no, selected_role):
         if user_role != selected_role:
             return jsonify({'message': 'Role mismatch'}), 403
         
-        student = mongo.db.students.find_one({'roll_no': roll_no})
+        student = db.students.find_one({'roll_no': roll_no})
         
         if not student:
             return jsonify({'message': 'Student not found'}), 404
@@ -894,18 +921,18 @@ def debug_canteen_data():
     """Debug endpoint to check canteen data"""
     try:
         # Check total unauthorized visits
-        total_unauthorized = mongo.db.canteen_visits.count_documents({
+        total_unauthorized = db.canteen_visits.count_documents({
             'is_unauthorized': True
         })
         
         # Check recent unauthorized visits
-        recent_unauthorized = mongo.db.canteen_visits.count_documents({
+        recent_unauthorized = db.canteen_visits.count_documents({
             'is_unauthorized': True,
             'timestamp': {'$gte': datetime(2024, 1, 1)}
         })
         
         # Sample data
-        sample_visits = list(mongo.db.canteen_visits.find(
+        sample_visits = list(db.canteen_visits.find(
             {'is_unauthorized': True},
             {'_id': 0}
         ).limit(5))
@@ -947,7 +974,7 @@ def handle_security_scan(selected_role):
         else:
             now = datetime.now()
         
-        student = mongo.db.students.find_one({'roll_no': roll_no})
+        student = db.students.find_one({'roll_no': roll_no})
         
         if not student:
             return jsonify({'message': 'Student not found'}), 404
@@ -985,7 +1012,7 @@ def handle_security_scan(selected_role):
                 'offline_sync': is_offline_sync
             }
             
-            mongo.db.students.update_one(
+            db.students.update_one(
                 {'roll_no': roll_no},
                 {'$push': {'in_out_records': out_record}}
             )
@@ -1017,7 +1044,7 @@ def handle_security_scan(selected_role):
             time_spent = (now - out_time).total_seconds() / 60  # in minutes
             
             # Update the record with in time
-            mongo.db.students.update_one(
+            db.students.update_one(
                 {'roll_no': roll_no, 'in_out_records.out_time': out_time},
                 {'$set': {
                     'in_out_records.$.in_time': now,
@@ -1058,7 +1085,7 @@ def handle_security_scan(selected_role):
                     'allowed_time_limit': max_allowed_time
                 }
                 
-                mongo.db.students.update_one(
+                db.students.update_one(
                     {'roll_no': roll_no},
                     {'$push': {'disciplinary_records': disciplinary_record}}
                 )
@@ -1114,7 +1141,7 @@ def get_all_devices():
         else:
             return jsonify({'message': 'Invalid token format'}), 401
         
-        devices = list(mongo.db.devices.find({}, {'_id': 0}))
+        devices = list(db.devices.find({}, {'_id': 0}))
         return jsonify({'devices': devices}), 200
     except Exception as e:
         return jsonify({'message': f'Error: {str(e)}'}), 500
@@ -1141,7 +1168,7 @@ def add_device():
             'device_type': data.get('device_type', 'mobile')
         }
         
-        mongo.db.devices.insert_one(new_device)
+        db.devices.insert_one(new_device)
         return jsonify({'message': 'Device added successfully'}), 200
     except Exception as e:
         return jsonify({'message': f'Error: {str(e)}'}), 500
@@ -1156,7 +1183,7 @@ def get_realtime_alerts():
         
         # Get alerts from last 7 days
         cutoff_time = datetime.now() - timedelta(days=7)
-        alerts = list(mongo.db.realtime_alerts.find(
+        alerts = list(db.realtime_alerts.find(
             {'timestamp': {'$gte': cutoff_time}},
             {'_id': 0}
         ).sort('timestamp', -1).limit(50))
@@ -1199,7 +1226,7 @@ def submit_weekly_canteen_report():
         }
         
         # Store in database
-        result = mongo.db.weekly_reports.insert_one(report)
+        result = db.weekly_reports.insert_one(report)
         
         return jsonify({
             'message': 'Weekly canteen report submitted successfully',
@@ -1272,7 +1299,7 @@ def get_monthly_unauthorized_visits():
             {'$sort': {'visit_count': -1}}
         ]
         
-        results = list(mongo.db.canteen_visits.aggregate(pipeline))
+        results = list(db.canteen_visits.aggregate(pipeline))
         
         # Prepare data for pie charts
         hostel_breakdown = defaultdict(lambda: defaultdict(int))
@@ -1400,7 +1427,7 @@ def calculate_weekly_late_arrivals():
             {'$sort': {'late_count': -1}}
         ]
         
-        results = list(mongo.db.students.aggregate(pipeline))
+        results = list(db.students.aggregate(pipeline))
         
         print(f"📊 Found {len(results)} students with late arrivals")
         
@@ -1422,14 +1449,14 @@ def calculate_weekly_late_arrivals():
         }
         
         # Remove old report for same week if exists
-        mongo.db.weekly_reports.delete_many({
+        db.weekly_reports.delete_many({
             'week_number': week_number,
             'year': year,
             'report_type': 'late_arrivals_weekly'
         })
         
         # Insert new report
-        mongo.db.weekly_reports.insert_one(weekly_summary)
+        db.weekly_reports.insert_one(weekly_summary)
         
         return jsonify({
             'message': f'Weekly late arrivals calculated for week {week_number}, {year}',
@@ -1460,7 +1487,7 @@ def get_late_arrivals_reports():
                 return jsonify({'message': 'Access denied'}), 403
         
         # Get reports from database
-        reports = list(mongo.db.weekly_reports.find(
+        reports = list(db.weekly_reports.find(
             {'report_type': 'late_arrivals_weekly'},
             {'_id': 0}
         ).sort([('year', -1), ('week_number', -1)]).limit(12))
@@ -1538,7 +1565,7 @@ def record_canteen_visit(selected_role):
         else:
             now = datetime.now()
         
-        student = mongo.db.students.find_one({'roll_no': roll_no})
+        student = db.students.find_one({'roll_no': roll_no})
         
         if not student:
             return jsonify({'message': 'Student not found'}), 404
@@ -1562,7 +1589,7 @@ def record_canteen_visit(selected_role):
             'offline_sync': is_offline_sync
         }
         
-        mongo.db.canteen_visits.insert_one(visit_record)
+        db.canteen_visits.insert_one(visit_record)
         
         response_data = {
             'message': 'Canteen visit recorded successfully',
@@ -1629,7 +1656,7 @@ def get_unauthorized_visits_analytics():
             {'$sort': {'visit_count': -1}}
         ]
         
-        results = list(mongo.db.canteen_visits.aggregate(pipeline))
+        results = list(db.canteen_visits.aggregate(pipeline))
         
         # Process for charts
         hostel_analysis = defaultdict(lambda: defaultdict(int))
@@ -1669,32 +1696,50 @@ def get_unauthorized_visits_analytics():
     except Exception as e:
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
+import numpy as np
+from datetime import datetime, timedelta
+
 def _predict_unauthorized_visits(daily_analysis):
-    """Predict next week's unauthorized visits using simple moving average (no sklearn needed)"""
+    """Predict next week's unauthorized visits using manual linear regression"""
     if len(daily_analysis) < 7:
         return {'accuracy': 'Insufficient data', 'predictions': []}
-
-    # Sort dates
-    dates = sorted(daily_analysis.keys())
-    values = [daily_analysis[d] for d in dates]
-
-    # Compute moving average
-    avg = sum(values[-7:]) / 7
-
-    # Predict next 7 days with small random variation
-    predictions = []
-    for i in range(7):
-        pred = max(0, round(avg))
-        predictions.append({
-            "date": (datetime.now() + timedelta(days=i+1)).strftime('%Y-%m-%d'),
-            "predicted_visits": pred
-        })
-
+    
+    # Prepare data
+    dates = sorted([datetime.strptime(day, '%Y-%m-%d') for day in daily_analysis.keys()])
+    visits = [daily_analysis[date.strftime('%Y-%m-%d')] for date in dates]
+    
+    # Convert dates to numerical values
+    X = np.array([i for i in range(len(dates))])
+    y = np.array(visits)
+    
+    # Manual linear regression (y = mx + b)
+    n = len(X)
+    sum_x = np.sum(X)
+    sum_y = np.sum(y)
+    sum_xy = np.sum(X * y)
+    sum_xx = np.sum(X * X)
+    
+    # Calculate slope (m) and intercept (b)
+    m = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x)
+    b = (sum_y - m * sum_x) / n
+    
+    # Predict next 7 days
+    future_days = np.array([i for i in range(len(dates), len(dates) + 7)])
+    predictions = m * future_days + b
+    
+    # Calculate accuracy (similar to your previous logic)
+    accuracy = max(0.85, min(0.95, 1 - (np.std(y) / np.mean(y)) if np.mean(y) > 0 else 0.85))
+    
     return {
-        "accuracy": 85.0,
-        "predictions": predictions
+        'accuracy': round(accuracy * 100, 1),
+        'predictions': [
+            {
+                'date': (datetime.now() + timedelta(days=i+1)).strftime('%Y-%m-%d'),
+                'predicted_visits': max(0, round(pred))
+            }
+            for i, pred in enumerate(predictions)
+        ]
     }
-
 
 def _generate_analytics_alerts(hostel_analysis, daily_analysis):
     """Generate intelligent alerts based on patterns"""
@@ -1741,7 +1786,7 @@ def _send_unauthorized_alert(visit_record):
     }
     
     # Store alert for super users
-    mongo.db.realtime_alerts.insert_one(alert_message)
+    db.realtime_alerts.insert_one(alert_message)
     print(f"📢 ALERT: {alert_message['message']}")
 
 # Late arrival analytics with hostel filtering
@@ -1785,7 +1830,7 @@ def get_late_arrivals_analytics():
             {'$sort': {'late_count': -1}}
         ]
         
-        results = list(mongo.db.students.aggregate(pipeline))
+        results = list(db.students.aggregate(pipeline))
         
         return jsonify({
             'weekly_late_arrivals': results,
@@ -1816,7 +1861,7 @@ def handle_admin_scan(selected_role):
         data = request.get_json()
         roll_no = data.get('roll_no')
         
-        student = mongo.db.students.find_one({'roll_no': roll_no})
+        student = db.students.find_one({'roll_no': roll_no})
         
         if not student:
             return jsonify({'message': 'Student not found'}), 404
@@ -1832,7 +1877,7 @@ def handle_admin_scan(selected_role):
             'type': 'verification'
         }
         
-        mongo.db.admin_scans.insert_one(scan_record)
+        db.admin_scans.insert_one(scan_record)
         
         return jsonify({
             'message': 'Student verification successful',
@@ -1912,7 +1957,7 @@ def get_predictive_insights():
             ]
         
         # Get all unauthorized visits for analysis
-        visits = list(mongo.db.canteen_visits.find(match_filter))
+        visits = list(db.canteen_visits.find(match_filter))
         
         if not visits:
             return jsonify({
@@ -2032,7 +2077,7 @@ def _generate_predictive_insights(visits):
     return insights
 
 def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
-    """Predict next week's unauthorized visits with ML - NOW ROLE-BASED"""
+    """Predict next week's unauthorized visits with manual linear regression - NOW ROLE-BASED"""
     
     # ✅ FIXED: Filter visits for super users BEFORE prediction
     if user_role and user_role.startswith('super_') and requested_hostel:
@@ -2078,28 +2123,51 @@ def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
     
     # Convert dates to numerical values (days since first date)
     first_date = dates[0]
-    X = np.array([(date - first_date).days for date in dates]).reshape(-1, 1)
+    X = np.array([(date - first_date).days for date in dates])
     y = np.array(visit_counts)
     
-    print(f"🔍 ML Input - X: {X.flatten()}, y: {y}")
+    print(f"🔍 ML Input - X: {X}, y: {y}")
     
-    # Train linear regression model
-    model = LinearRegression()
-    model.fit(X, y)
+    # MANUAL LINEAR REGRESSION (replaces sklearn)
+    n = len(X)
+    if n == 0:
+        return {
+            'accuracy': 'Insufficient data',
+            'predictions': [],
+            'confidence': 0,
+            'scope': 'hostel' if user_role and user_role.startswith('super_') else 'system'
+        }
+    
+    # Calculate slope (m) and intercept (b) manually: y = mx + b
+    sum_x = np.sum(X)
+    sum_y = np.sum(y)
+    sum_xy = np.sum(X * y)
+    sum_xx = np.sum(X * X)
+    
+    # Avoid division by zero
+    denominator = n * sum_xx - sum_x * sum_x
+    if denominator == 0:
+        # If all X values are same, use average
+        m = 0
+        b = sum_y / n
+    else:
+        m = (n * sum_xy - sum_x * sum_y) / denominator
+        b = (sum_y - m * sum_x) / n
+    
+    print(f"🔍 Manual Regression - Intercept: {b:.2f}, Slope: {m:.2f}")
     
     # Calculate accuracy metrics
-    predictions = model.predict(X)
+    predictions = m * X + b
     mse = np.mean((y - predictions) ** 2)
     accuracy = max(0.75, min(0.95, 1 - (mse / np.mean(y)) if np.mean(y) > 0 else 0.85))
     
-    print(f"🔍 ML Results - MSE: {mse:.2f}, Accuracy: {accuracy:.2f}")
-    print(f"🔍 Model coefficients - Intercept: {model.intercept_:.2f}, Slope: {model.coef_[0]:.2f}")
+    print(f"🔍 Manual Results - MSE: {mse:.2f}, Accuracy: {accuracy:.2f}")
     
     # Predict next 7 days
     last_date = dates[-1]
     future_dates = [last_date + timedelta(days=i+1) for i in range(7)]
-    future_X = np.array([(date - first_date).days for date in future_dates]).reshape(-1, 1)
-    future_predictions = model.predict(future_X)
+    future_X = np.array([(date - first_date).days for date in future_dates])
+    future_predictions = m * future_X + b
     
     print(f"🔍 Future predictions raw: {future_predictions}")
     
@@ -2213,7 +2281,7 @@ def get_real_time_alerts():
         cutoff_time = datetime.now() - timedelta(hours=hours)
         
         # Get unauthorized visits in timeframe
-        visits = list(mongo.db.canteen_visits.find({
+        visits = list(db.canteen_visits.find({
             'timestamp': {'$gte': cutoff_time},
             'is_unauthorized': True
         }))
@@ -2300,7 +2368,7 @@ def _generate_real_time_alerts(visits, timeframe_hours):
     if timeframe_hours >= 24:  # Only for daily check
         today = datetime.now()
         if today.weekday() == 6:  # Sunday - reminder for weekly report
-            weekly_visits = len(list(mongo.db.canteen_visits.find({
+            weekly_visits = len(list(db.canteen_visits.find({
                 'timestamp': {'$gte': today - timedelta(days=7)},
                 'is_unauthorized': True
             })))
@@ -2378,7 +2446,7 @@ def get_visit_trends():
             }}
         ]
         
-        results = list(mongo.db.canteen_visits.aggregate(pipeline))
+        results = list(db.canteen_visits.aggregate(pipeline))
         
         # Generate predictions for the trend data
         trends_with_predictions = _generate_trend_predictions(results, days)
@@ -2468,7 +2536,7 @@ def get_weekly_summary():
         week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
         
         # Get this week's unauthorized visits
-        visits = list(mongo.db.canteen_visits.find({
+        visits = list(db.canteen_visits.find({
             'timestamp': {'$gte': week_start},
             'is_unauthorized': True
         }))
@@ -2583,7 +2651,7 @@ def sync_security_scans():
                 now = datetime.now()
             
             # Your existing security scan logic here
-            student = mongo.db.students.find_one({'roll_no': roll_no})
+            student = db.students.find_one({'roll_no': roll_no})
             
             if not student:
                 results.append({'success': False, 'roll_no': roll_no, 'error': 'Student not found'})
@@ -2613,7 +2681,7 @@ def sync_security_scans():
                     'offline_sync': True
                 }
                 
-                mongo.db.students.update_one(
+                db.students.update_one(
                     {'roll_no': roll_no},
                     {'$push': {'in_out_records': out_record}}
                 )
@@ -2637,7 +2705,7 @@ def sync_security_scans():
                 time_spent = (now - out_time).total_seconds() / 60
                 
                 # Update the record with in time
-                mongo.db.students.update_one(
+                db.students.update_one(
                     {'roll_no': roll_no, 'in_out_records.out_time': out_time},
                     {'$set': {
                         'in_out_records.$.in_time': now,
@@ -2669,7 +2737,7 @@ def manage_student_allowed_time(roll_no):
         else:
             return jsonify({'message': 'Invalid token format'}), 401
         
-        student = mongo.db.students.find_one({'roll_no': roll_no})
+        student = db.students.find_one({'roll_no': roll_no})
         
         if not student:
             return jsonify({'message': 'Student not found'}), 404
@@ -2699,7 +2767,7 @@ def manage_student_allowed_time(roll_no):
                 'allowed_time_updated_by': 'admin'
             }
             
-            mongo.db.students.update_one(
+            db.students.update_one(
                 {'roll_no': roll_no},
                 {'$set': update_data}
             )
@@ -2741,13 +2809,13 @@ def reset_student_allowed_time(roll_no):
             if user_role != 'admin':
                 return jsonify({'message': 'Admin access required'}), 403
         
-        student = mongo.db.students.find_one({'roll_no': roll_no})
+        student = db.students.find_one({'roll_no': roll_no})
         
         if not student:
             return jsonify({'message': 'Student not found'}), 404
         
         # Remove custom allowed time to use default
-        mongo.db.students.update_one(
+        db.students.update_one(
             {'roll_no': roll_no},
             {'$unset': {
                 'custom_allowed_time_minutes': "",
@@ -2804,7 +2872,7 @@ def sync_canteen_visits():
             else:
                 now = datetime.now()
             
-            student = mongo.db.students.find_one({'roll_no': roll_no})
+            student = db.students.find_one({'roll_no': roll_no})
             
             if not student:
                 results.append({'success': False, 'roll_no': roll_no, 'error': 'Student not found'})
@@ -2828,7 +2896,7 @@ def sync_canteen_visits():
                 'offline_sync': True
             }
             
-            mongo.db.canteen_visits.insert_one(visit_record)
+            db.canteen_visits.insert_one(visit_record)
             results.append({'success': True, 'roll_no': roll_no})
             
             if is_unauthorized:

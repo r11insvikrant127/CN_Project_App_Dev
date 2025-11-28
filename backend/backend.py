@@ -33,7 +33,7 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)
 app.json_encoder = CustomJSONEncoder
 
 # ------------------------------
-# 🔥 FIXED MONGO CONNECTION (Render + Atlas SSL compatible)
+# 🔥 IMPROVED MONGO CONNECTION
 # ------------------------------
 
 MONGO_URL = os.environ.get(
@@ -45,13 +45,22 @@ try:
     client = MongoClient(
         MONGO_URL,
         tls=True,
-        tlsCAFile=certifi.where(),          # IMPORTANT: Fixes SSL handshake issue
-        serverSelectionTimeoutMS=5000
+        tlsCAFile=certifi.where(),
+        tlsAllowInvalidCertificates=False,  # Added for better security
+        connectTimeoutMS=10000,             # Increased timeout
+        socketTimeoutMS=30000,              # Added socket timeout
+        serverSelectionTimeoutMS=10000      # Increased server selection timeout
     )
+    
+    # Test the connection immediately
+    client.admin.command('ping')
     db = client["student_management"]
     print("✅ MongoDB connected successfully!")
+    
 except Exception as e:
-    print("❌ MongoDB connection failed:", e)
+    print(f"❌ MongoDB connection failed: {e}")
+    # Consider raising an exception or setting db to None
+    db = None
 
 # ------------------------------
 # JWT

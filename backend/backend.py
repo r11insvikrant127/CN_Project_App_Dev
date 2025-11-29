@@ -7,16 +7,18 @@ import hashlib
 import numpy as np
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
-from datetime import datetime, timedelta, date
 from collections import defaultdict, Counter
 import json
 import time
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-
+from datetime import datetime, timezone, timedelta, date
 # NEW IMPORTS (required for Atlas + Render)
 from pymongo import MongoClient
 import certifi
+
+# India timezone (UTC+5:30)
+INDIA_TZ = timezone(timedelta(hours=5, minutes=30))
 
 # Custom JSON encoder to handle datetime and ObjectId serialization
 class CustomJSONEncoder(json.JSONEncoder):
@@ -32,39 +34,42 @@ app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-ke
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)
 app.json_encoder = CustomJSONEncoder
 
-# ------------------------------
-# 🔥 IMPROVED MONGO CONNECTION
-# ------------------------------
 
 MONGO_URL = os.environ.get(
     "MONGO_URL",
     "mongodb://localhost:27017/student_management"
 )
 
+# Initialize db as None first
+db = None
+client = None
+
 try:
-    client = MongoClient(
-        MONGO_URL,
-        tls=True,
-        tlsCAFile=certifi.where(),
-        tlsAllowInvalidCertificates=False,  # Added for better security
-        connectTimeoutMS=10000,             # Increased timeout
-        socketTimeoutMS=30000,              # Added socket timeout
-        serverSelectionTimeoutMS=10000      # Increased server selection timeout
-    )
+    print(f"🔗 Attempting MongoDB connection to: {MONGO_URL.split('@')[1].split('/')[0] if '@' in MONGO_URL else 'localhost'}")
     
-    # Test the connection immediately
+    # Try connection with multiple SSL options
+    connection_options = {
+        'tls': True,
+        'tlsCAFile': certifi.where(),
+        'connectTimeoutMS': 10000,
+        'socketTimeoutMS': 30000,
+        'serverSelectionTimeoutMS': 15000,
+        'retryWrites': True,
+        'maxPoolSize': 50
+    }
+    
+    client = MongoClient(MONGO_URL, **connection_options)
+    
+    # Test the connection
     client.admin.command('ping')
     db = client["student_management"]
     print("✅ MongoDB connected successfully!")
     
 except Exception as e:
     print(f"❌ MongoDB connection failed: {e}")
-    # Consider raising an exception or setting db to None
-    db = None
+    print("🔄 Application will start without database connectivity")
+    # Don't set db = None here since we already initialized it as None
 
-# ------------------------------
-# JWT
-# ------------------------------
 jwt = JWTManager(app)
 
 
@@ -112,7 +117,7 @@ SUBROLE_IDS = {
 def cleanup_old_movement_records():
     try:
         # Changed from 30 days to 6 months (180 days)
-        cutoff_time = datetime.now() - timedelta(days=180)
+        cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=180)
         print(f"🔄 Cleaning up movement records older than: {cutoff_time}")
         
         # Update all students to remove in_out_records older than 6 months
@@ -134,7 +139,7 @@ def cleanup_old_movement_records():
 def comprehensive_data_cleanup():
     """Clean up all old data older than 6 months"""
     try:
-        cutoff_time = datetime.now() - timedelta(days=180)
+        cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=180)
         print(f"🧹 Starting comprehensive data cleanup for records older than: {cutoff_time}")
         
         cleanup_stats = {}
@@ -218,7 +223,7 @@ def log_security_event(event_type, user_role, device_id, ip_address, details=Non
             'user_role': user_role,
             'device_id': device_id,
             'ip_address': ip_address,
-            'timestamp': datetime.now(),
+            'timestamp': datetime.now(INDIA_TZ),
             'details': details or {}
         }
         db.security_logs.insert_one(log_entry)
@@ -288,7 +293,7 @@ def admin_biometric_auth():
             del login_attempts[attempt_key]
         
         # Create session
-        session_id = hashlib.sha256(f"{device_id}{datetime.now()}".encode()).hexdigest()
+        session_id = hashlib.sha256(f"{device_id}{datetime.now(INDIA_TZ)}".encode()).hexdigest()
         identity_string = f"{device_id}:admin"
         
         access_token = create_access_token(identity=identity_string)
@@ -297,8 +302,8 @@ def admin_biometric_auth():
         active_sessions[session_id] = {
             'device_id': device_id,
             'role': 'admin',
-            'login_time': datetime.now(),
-            'last_activity': datetime.now(),
+            'login_time': datetime.now(INDIA_TZ),
+            'last_activity': datetime.now(INDIA_TZ),
             'biometric_verified': biometric_verified,
             'device_verified': True,
             'ip_address': ip_address
@@ -381,7 +386,7 @@ def check_session_timeout():
                     session_found = False
                     for session_id, session_data in list(active_sessions.items()):
                         if session_data['device_id'] == device_id:
-                            time_since_activity = datetime.now() - session_data['last_activity']
+                            time_since_activity = datetime.now(INDIA_TZ) - session_data['last_activity']
                             if time_since_activity.total_seconds() > SESSION_TIMEOUT:
                                 # Session expired
                                 del active_sessions[session_id]
@@ -389,7 +394,7 @@ def check_session_timeout():
                                 return jsonify({'message': 'Session expired. Please login again.'}), 401
                             else:
                                 # Update last activity
-                                active_sessions[session_id]['last_activity'] = datetime.now()
+                                active_sessions[session_id]['last_activity'] = datetime.now(INDIA_TZ)
                                 session_found = True
                                 break
                     
@@ -448,7 +453,7 @@ def verify_device():
             'session_token': access_token,
             'token_type': 'bearer',
             'expires_in': 28800,  # 8 hours
-            'issued_at': datetime.now().isoformat()
+            'issued_at': datetime.now(INDIA_TZ).isoformat()
         }), 200
     else:
         print("❌ Device not found in database")
@@ -618,7 +623,7 @@ def get_security_logs():
                 return jsonify({'message': 'Admin access required'}), 403
         
         # Get logs from last 7 days
-        cutoff_time = datetime.now() - timedelta(days=7)
+        cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=7)
         logs = list(db.security_logs.find(
             {'timestamp': {'$gte': cutoff_time}},
             {'_id': 0}
@@ -638,7 +643,7 @@ def cleanup_expired_data():
         # Clean expired sessions
         expired_sessions = []
         for session_id, session_data in active_sessions.items():
-            time_since_activity = datetime.now() - session_data['last_activity']
+            time_since_activity = datetime.now(INDIA_TZ) - session_data['last_activity']
             if time_since_activity.total_seconds() > SESSION_TIMEOUT:
                 expired_sessions.append(session_id)
         
@@ -692,7 +697,7 @@ def manual_cleanup_data():
         months = data.get('months', 6)  # Default to 6 months
         
         # Calculate cutoff time based on months parameter
-        cutoff_time = datetime.now() - timedelta(days=months*30)
+        cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=months*30)
         
         print(f"🧹 Manual cleanup requested for data older than {months} months ({cutoff_time})")
         
@@ -774,7 +779,7 @@ def get_cleanup_stats():
                 return jsonify({'message': 'Admin access required'}), 403
         
         # Calculate data statistics
-        six_months_ago = datetime.now() - timedelta(days=180)
+        six_months_ago = datetime.now(INDIA_TZ) - timedelta(days=180)
         
         stats = {
             'data_older_than_6_months': {
@@ -793,7 +798,7 @@ def get_cleanup_stats():
             },
             'next_scheduled_cleanup': '1st of every month at 2:00 AM',
             'cleanup_cutoff_days': 180,
-            'current_time': datetime.now().isoformat(),
+            'current_time': datetime.now(INDIA_TZ).isoformat(),
             'cutoff_time': six_months_ago.isoformat()
         }
         
@@ -817,7 +822,7 @@ def get_test_data():
             '/api/alerts/realtime',
             '/api/analytics/late-arrivals-weekly'
         ],
-        'timestamp': datetime.now().isoformat(),
+        'timestamp': datetime.now(INDIA_TZ).isoformat(),
         'version': '2.0'
     }), 200
 
@@ -981,7 +986,7 @@ def handle_security_scan(selected_role):
             now = datetime.fromtimestamp(original_timestamp / 1000)  # Convert from milliseconds
             print(f"🔄 Processing offline sync: {roll_no}, {action}, original time: {now}")
         else:
-            now = datetime.now()
+            now = datetime.now(INDIA_TZ)
         
         student = db.students.find_one({'roll_no': roll_no})
         
@@ -1172,8 +1177,8 @@ def add_device():
             'device_id': data.get('device_id'),
             'device_name': data.get('device_name', 'Unnamed Device'),
             'status': 'active',
-            'registered_at': datetime.now(),
-            'last_verified': datetime.now(),
+            'registered_at': datetime.now(INDIA_TZ),
+            'last_verified': datetime.now(INDIA_TZ),
             'device_type': data.get('device_type', 'mobile')
         }
         
@@ -1191,7 +1196,7 @@ def get_realtime_alerts():
             device_id, user_role = identity_string.split(':', 1)
         
         # Get alerts from last 7 days
-        cutoff_time = datetime.now() - timedelta(days=7)
+        cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=7)
         alerts = list(db.realtime_alerts.find(
             {'timestamp': {'$gte': cutoff_time}},
             {'_id': 0}
@@ -1230,7 +1235,7 @@ def submit_weekly_canteen_report():
             'extra_students_count': data['extra_students_count'],
             'report_data': data.get('report_data', {}),
             'submitted_by': user_role,
-            'submitted_at': datetime.now(),
+            'submitted_at': datetime.now(INDIA_TZ),
             'report_type': 'canteen_weekly'
         }
         
@@ -1261,8 +1266,8 @@ def get_monthly_unauthorized_visits():
                 return jsonify({'message': 'Access denied'}), 403
         
         # Get month, year, and optional hostel from query params
-        year = int(request.args.get('year', datetime.now().year))
-        month = int(request.args.get('month', datetime.now().month))
+        year = int(request.args.get('year', datetime.now(INDIA_TZ).year))
+        month = int(request.args.get('month', datetime.now(INDIA_TZ).month))
         requested_hostel = request.args.get('hostel')  # For super users
         
         start_date = datetime(year, month, 1)
@@ -1380,8 +1385,8 @@ def calculate_weekly_late_arrivals():
                 return jsonify({'message': 'Access denied'}), 403
         
         data = request.get_json()
-        week_number = data.get('week', datetime.now().isocalendar()[1])
-        year = data.get('year', datetime.now().year)
+        week_number = data.get('week', datetime.now(INDIA_TZ).isocalendar()[1])
+        year = data.get('year', datetime.now(INDIA_TZ).year)
         
         # Calculate start and end of week (Monday to Sunday)
         start_date = datetime.fromisocalendar(year, week_number, 1)  # Monday
@@ -1391,7 +1396,7 @@ def calculate_weekly_late_arrivals():
         print(f"📅 Date range: {start_date} to {end_date}")
         
         # First, verify we have data for this period
-        cutoff_time = datetime.now() - timedelta(days=30)
+        cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=30)
         if end_date < cutoff_time:
             return jsonify({
                 'message': f'Data for week {week_number}, {year} has been cleaned up (older than 30 days)',
@@ -1444,7 +1449,7 @@ def calculate_weekly_late_arrivals():
         weekly_summary = {
             'week_number': week_number,
             'year': year,
-            'calculation_date': datetime.now(),
+            'calculation_date': datetime.now(INDIA_TZ),
             'date_range': {
                 'start': start_date,
                 'end': end_date
@@ -1517,7 +1522,7 @@ def generate_weekly_report():
                 return jsonify({'message': 'Super access required'}), 403
         
         data = request.get_json()
-        week_number = data.get('week', datetime.now().isocalendar()[1])
+        week_number = data.get('week', datetime.now(INDIA_TZ).isocalendar()[1])
         
         # Generate comprehensive weekly report
         report = _generate_weekly_analytics(week_number, user_role)
@@ -1532,7 +1537,7 @@ def _generate_weekly_analytics(week_number, user_role):
     return {
         'week_number': week_number,
         'generated_by': user_role,
-        'timestamp': datetime.now(),
+        'timestamp': datetime.now(INDIA_TZ),
         'summary': {
             'total_unauthorized_visits': 0,
             'total_late_arrivals': 0,
@@ -1572,7 +1577,7 @@ def record_canteen_visit(selected_role):
         if is_offline_sync and original_timestamp:
             now = datetime.fromtimestamp(original_timestamp / 1000)  # Convert from milliseconds
         else:
-            now = datetime.now()
+            now = datetime.now(INDIA_TZ)
         
         student = db.students.find_one({'roll_no': roll_no})
         
@@ -1636,7 +1641,7 @@ def get_unauthorized_visits_analytics():
         # Get timeframe and optional hostel from query params
         days = int(request.args.get('days', 30))
         requested_hostel = request.args.get('hostel')  # For super users
-        cutoff_date = datetime.now() - timedelta(days=days)
+        cutoff_date = datetime.now(INDIA_TZ) - timedelta(days=days)
         
         # Build match filter based on user role
         match_filter = {
@@ -1743,7 +1748,7 @@ def _predict_unauthorized_visits(daily_analysis):
         'accuracy': round(accuracy * 100, 1),
         'predictions': [
             {
-                'date': (datetime.now() + timedelta(days=i+1)).strftime('%Y-%m-%d'),
+                'date': (datetime.now(INDIA_TZ) + timedelta(days=i+1)).strftime('%Y-%m-%d'),
                 'predicted_visits': max(0, round(pred))
             }
             for i, pred in enumerate(predictions)
@@ -1756,7 +1761,7 @@ def _generate_analytics_alerts(hostel_analysis, daily_analysis):
     
     # Peak hour detection
     recent_visits = {k: v for k, v in daily_analysis.items() 
-                    if datetime.strptime(k, '%Y-%m-%d') > datetime.now() - timedelta(days=7)}
+                    if datetime.strptime(k, '%Y-%m-%d') > datetime.now(INDIA_TZ) - timedelta(days=7)}
     
     if recent_visits:
         avg_recent = sum(recent_visits.values()) / len(recent_visits)
@@ -1790,7 +1795,7 @@ def _send_unauthorized_alert(visit_record):
             'canteen_hostel': visit_record['canteen_hostel'],
             'time': visit_record['timestamp'].strftime('%H:%M')
         },
-        'timestamp': datetime.now(),
+        'timestamp': datetime.now(INDIA_TZ),
         'priority': 'high'
     }
     
@@ -1875,7 +1880,7 @@ def handle_admin_scan(selected_role):
         if not student:
             return jsonify({'message': 'Student not found'}), 404
         
-        now = datetime.now()
+        now = datetime.now(INDIA_TZ)
         
         # Record admin/super scan for audit
         scan_record = {
@@ -1902,7 +1907,7 @@ def handle_admin_scan(selected_role):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}, 200
+    return {"status": "ok", "timestamp": datetime.now(INDIA_TZ).isoformat()}, 200
 
 @app.route("/", methods=["GET"])
 def home():
@@ -1950,7 +1955,7 @@ def get_predictive_insights():
         requested_hostel = request.args.get('hostel')
         days = int(request.args.get('days', 30))
         
-        cutoff_date = datetime.now() - timedelta(days=days)
+        cutoff_date = datetime.now(INDIA_TZ) - timedelta(days=days)
         
         # Build match filter
         match_filter = {
@@ -1990,7 +1995,7 @@ def get_predictive_insights():
             'summary': {
                 'total_visits_analyzed': len(visits),
                 'analysis_period_days': days,
-                'generated_at': datetime.now().isoformat()
+                'generated_at': datetime.now(INDIA_TZ).isoformat()
             }
         }), 200
         
@@ -2224,8 +2229,8 @@ def _generate_ai_alerts(visits):
     hostel_activity = defaultdict(int)
     recent_activity = defaultdict(int)
     
-    cutoff_24h = datetime.now() - timedelta(hours=24)
-    cutoff_2h = datetime.now() - timedelta(hours=2)
+    cutoff_24h = datetime.now(INDIA_TZ) - timedelta(hours=24)
+    cutoff_2h = datetime.now(INDIA_TZ) - timedelta(hours=2)
     
     for visit in visits:
         student_hostel = visit.get('student_hostel', 'Unknown')
@@ -2287,7 +2292,7 @@ def get_real_time_alerts():
         
         # Get timeframe from query params (default: last 2 hours)
         hours = int(request.args.get('hours', 2))
-        cutoff_time = datetime.now() - timedelta(hours=hours)
+        cutoff_time = datetime.now(INDIA_TZ) - timedelta(hours=hours)
         
         # Get unauthorized visits in timeframe
         visits = list(db.canteen_visits.find({
@@ -2301,7 +2306,7 @@ def get_real_time_alerts():
             'alerts': alerts,
             'timeframe_hours': hours,
             'total_unauthorized_visits': len(visits),
-            'generated_at': datetime.now().isoformat()
+            'generated_at': datetime.now(INDIA_TZ).isoformat()
         }), 200
         
     except Exception as e:
@@ -2362,7 +2367,7 @@ def _generate_real_time_alerts(visits, timeframe_hours):
     if hourly_breakdown:
         peak_hour = max(hourly_breakdown.items(), key=lambda x: x[1])
         if peak_hour[1] >= 3:  # At least 3 visits in that hour
-            current_hour = datetime.now().hour
+            current_hour = datetime.now(INDIA_TZ).hour
             if abs(peak_hour[0] - current_hour) <= 2:  # Recent peak hour
                 alerts.append({
                     'type': 'peak_hour_alert',
@@ -2375,7 +2380,7 @@ def _generate_real_time_alerts(visits, timeframe_hours):
     
     # Alert 4: Weekly report reminder (for supers)
     if timeframe_hours >= 24:  # Only for daily check
-        today = datetime.now()
+        today = datetime.now(INDIA_TZ)
         if today.weekday() == 6:  # Sunday - reminder for weekly report
             weekly_visits = len(list(db.canteen_visits.find({
                 'timestamp': {'$gte': today - timedelta(days=7)},
@@ -2407,7 +2412,7 @@ def get_visit_trends():
         days = int(request.args.get('days', 7))
         requested_hostel = request.args.get('hostel')  # For super users
         
-        cutoff_date = datetime.now() - timedelta(days=days)
+        cutoff_date = datetime.now(INDIA_TZ) - timedelta(days=days)
         
         # Build match filter based on user role
         match_filter = {
@@ -2541,7 +2546,7 @@ def get_weekly_summary():
         if ':' in identity_string:
             device_id, user_role = identity_string.split(':', 1)
         
-        week_start = datetime.now() - timedelta(days=datetime.now().weekday())
+        week_start = datetime.now(INDIA_TZ) - timedelta(days=datetime.now(INDIA_TZ).weekday())
         week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
         
         # Get this week's unauthorized visits
@@ -2561,7 +2566,7 @@ def get_weekly_summary():
                 'total_visits': len(visits),
                 'hostel_breakdown': dict(hostel_summary),
                 'week_start': week_start.isoformat(),
-                'days_remaining': 6 - datetime.now().weekday()
+                'days_remaining': 6 - datetime.now(INDIA_TZ).weekday()
             }
         }), 200
         
@@ -2589,13 +2594,13 @@ def check_session_timeout():
                     # Check for session timeout (8 hours)
                     for session_id, session_data in active_sessions.items():
                         if session_data['device_id'] == device_id:
-                            time_since_activity = datetime.now() - session_data['last_activity']
+                            time_since_activity = datetime.now(INDIA_TZ) - session_data['last_activity']
                             if time_since_activity.total_seconds() > 28800:  # 8 hours
                                 del active_sessions[session_id]
                                 return jsonify({'message': 'Session expired'}), 401
                             else:
                                 # Update last activity
-                                active_sessions[session_id]['last_activity'] = datetime.now()
+                                active_sessions[session_id]['last_activity'] = datetime.now(INDIA_TZ)
                                 break
         except Exception:
             pass
@@ -2657,7 +2662,7 @@ def sync_security_scans():
             if original_timestamp:
                 now = datetime.fromtimestamp(original_timestamp / 1000)
             else:
-                now = datetime.now()
+                now = datetime.now(INDIA_TZ)
             
             # Your existing security scan logic here
             student = db.students.find_one({'roll_no': roll_no})
@@ -2772,7 +2777,7 @@ def manage_student_allowed_time(roll_no):
             # Update student with custom allowed time
             update_data = {
                 'custom_allowed_time_minutes': float(new_allowed_time),
-                'allowed_time_updated_at': datetime.now(),
+                'allowed_time_updated_at': datetime.now(INDIA_TZ),
                 'allowed_time_updated_by': 'admin'
             }
             
@@ -2800,7 +2805,7 @@ def manage_student_allowed_time(roll_no):
                 'roll_no': roll_no,
                 'student_name': student.get('name', 'Unknown'),
                 'new_allowed_time': new_allowed_time,
-                'updated_at': datetime.now().isoformat()
+                'updated_at': datetime.now(INDIA_TZ).isoformat()
             }), 200
             
     except Exception as e:
@@ -2851,7 +2856,7 @@ def reset_student_allowed_time(roll_no):
             'roll_no': roll_no,
             'student_name': student.get('name', 'Unknown'),
             'current_allowed_time': 480,
-            'reset_at': datetime.now().isoformat()
+            'reset_at': datetime.now(INDIA_TZ).isoformat()
         }), 200
         
     except Exception as e:
@@ -2879,7 +2884,7 @@ def sync_canteen_visits():
             if original_timestamp:
                 now = datetime.fromtimestamp(original_timestamp / 1000)
             else:
-                now = datetime.now()
+                now = datetime.now(INDIA_TZ)
             
             student = db.students.find_one({'roll_no': roll_no})
             

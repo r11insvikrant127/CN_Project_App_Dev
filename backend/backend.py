@@ -24,10 +24,13 @@ INDIA_TZ = timezone(timedelta(hours=5, minutes=30))
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, (datetime, date)):
-            # Ensure timezone awareness
+            # Convert to India timezone before serialization
             if obj.tzinfo is None:
-                obj = obj.replace(tzinfo=INDIA_TZ)
-            return obj.isoformat()
+                # If no timezone, assume it's UTC and convert to IST
+                obj = obj.replace(tzinfo=timezone.utc)
+            # Convert to IST for storage
+            obj_ist = obj.astimezone(INDIA_TZ)
+            return obj_ist.isoformat()
         elif isinstance(obj, ObjectId):
             return str(obj)
         return super().default(obj)
@@ -232,6 +235,39 @@ def log_security_event(event_type, user_role, device_id, ip_address, details=Non
         db.security_logs.insert_one(log_entry)
     except Exception as e:
         print(f"❌ Error logging security event: {e}")
+        
+# ADD THE MIDDLEWARE RIGHT HERE - after app setup, before routes
+@app.after_request
+def convert_timestamps_to_ist(response):
+    """Convert all datetime objects in responses to IST"""
+    if response.content_type == 'application/json':
+        try:
+            data = json.loads(response.get_data())
+            
+            def convert_datetimes(obj):
+                if isinstance(obj, dict):
+                    return {k: convert_datetimes(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_datetimes(item) for item in obj]
+                elif isinstance(obj, str):
+                    # Try to parse as datetime and convert to IST
+                    try:
+                        # Handle ISO format dates
+                        dt = datetime.fromisoformat(obj.replace('Z', '+00:00'))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        return dt.astimezone(INDIA_TZ).isoformat()
+                    except (ValueError, AttributeError):
+                        return obj
+                return obj
+            
+            converted_data = convert_datetimes(data)
+            response.set_data(json.dumps(converted_data, cls=CustomJSONEncoder))
+        except Exception as e:
+            print(f"Timestamp conversion error: {e}")
+    
+    return response
+
 
 # Enhanced admin authentication with biometric flag
 # Enhanced admin authentication with biometric OR device verification

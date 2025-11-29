@@ -24,6 +24,9 @@ INDIA_TZ = timezone(timedelta(hours=5, minutes=30))
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, (datetime, date)):
+            # Ensure timezone awareness
+            if obj.tzinfo is None:
+                obj = obj.replace(tzinfo=INDIA_TZ)
             return obj.isoformat()
         elif isinstance(obj, ObjectId):
             return str(obj)
@@ -942,7 +945,7 @@ def debug_canteen_data():
         # Check recent unauthorized visits
         recent_unauthorized = db.canteen_visits.count_documents({
             'is_unauthorized': True,
-            'timestamp': {'$gte': datetime(2024, 1, 1)}
+            'timestamp': {'$gte': datetime(2024, 1, 1, tzinfo=INDIA_TZ)}
         })
         
         # Sample data
@@ -983,7 +986,7 @@ def handle_security_scan(selected_role):
         
         # Use original timestamp if this is an offline sync
         if is_offline_sync and original_timestamp:
-            now = datetime.fromtimestamp(original_timestamp / 1000)  # Convert from milliseconds
+            now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ) # Convert from milliseconds
             print(f"🔄 Processing offline sync: {roll_no}, {action}, original time: {now}")
         else:
             now = datetime.now(INDIA_TZ)
@@ -1270,11 +1273,11 @@ def get_monthly_unauthorized_visits():
         month = int(request.args.get('month', datetime.now(INDIA_TZ).month))
         requested_hostel = request.args.get('hostel')  # For super users
         
-        start_date = datetime(year, month, 1)
+        start_date = datetime(year, month, 1, tzinfo=INDIA_TZ)
         if month == 12:
-            end_date = datetime(year + 1, 1, 1)
+            end_date = datetime(year + 1, 1, 1, tzinfo=INDIA_TZ)
         else:
-            end_date = datetime(year, month + 1, 1)
+            end_date = datetime(year, month + 1, 1, tzinfo=INDIA_TZ)
         
         print(f"📊 Fetching monthly data for {month}/{year}, hostel: {requested_hostel}")
         
@@ -1389,7 +1392,7 @@ def calculate_weekly_late_arrivals():
         year = data.get('year', datetime.now(INDIA_TZ).year)
         
         # Calculate start and end of week (Monday to Sunday)
-        start_date = datetime.fromisocalendar(year, week_number, 1)  # Monday
+        start_date = datetime.fromisocalendar(year, week_number, 1).replace(tzinfo=INDIA_TZ)  # Monday
         end_date = start_date + timedelta(days=7)  # Next Monday
         
         print(f"📅 Calculating weekly late arrivals for week {week_number}, {year}")
@@ -1575,7 +1578,7 @@ def record_canteen_visit(selected_role):
         
         # Use original timestamp if this is an offline sync
         if is_offline_sync and original_timestamp:
-            now = datetime.fromtimestamp(original_timestamp / 1000)  # Convert from milliseconds
+           now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ) # Convert from milliseconds
         else:
             now = datetime.now(INDIA_TZ)
         
@@ -2660,7 +2663,7 @@ def sync_security_scans():
             
             # Use original timestamp from offline scan
             if original_timestamp:
-                now = datetime.fromtimestamp(original_timestamp / 1000)
+                now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ)
             else:
                 now = datetime.now(INDIA_TZ)
             
@@ -2882,7 +2885,7 @@ def sync_canteen_visits():
             original_timestamp = visit.get('original_timestamp')
             
             if original_timestamp:
-                now = datetime.fromtimestamp(original_timestamp / 1000)
+                now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ)
             else:
                 now = datetime.now(INDIA_TZ)
             

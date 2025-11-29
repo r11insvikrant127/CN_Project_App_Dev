@@ -1,5 +1,3 @@
-//food_menu_screen.dart
-
 import 'package:flutter/material.dart';
 
 class FoodMenuScreen extends StatefulWidget {

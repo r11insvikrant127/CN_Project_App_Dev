@@ -1086,9 +1086,11 @@ def handle_security_scan(selected_role):
         original_timestamp = data.get('original_timestamp')
         
         # ✅ FIX: Ensure all datetime objects are timezone-aware
+        # FIXED:
         if is_offline_sync and original_timestamp:
-            # Convert from milliseconds and ensure timezone awareness
-            now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ)
+            # Convert UTC timestamp to IST properly
+            utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
+            now = utc_time.astimezone(INDIA_TZ)
             print(f"🔄 Processing offline sync: {roll_no}, {action}, original time: {now}")
         else:
             now = datetime.now(INDIA_TZ)  # This is already timezone-aware
@@ -1188,8 +1190,11 @@ def handle_security_scan(selected_role):
                 print(f"🕒 Normalized out_time to IST: {out_time}")
             
             # ✅ Ensure now is also in IST (should already be)
+            # ✅ FIXED:
             if is_offline_sync and original_timestamp:
-                now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ)
+                # Convert UTC timestamp to IST properly
+                utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
+                now = utc_time.astimezone(INDIA_TZ)
             else:
                 now = datetime.now(INDIA_TZ)
             
@@ -1721,8 +1726,11 @@ def record_canteen_visit(selected_role):
             return jsonify({'message': 'Roll number is required'}), 400
         
         # Use original timestamp if this is an offline sync
+        # FIXED:
         if is_offline_sync and original_timestamp:
-           now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ) # Convert from milliseconds
+            # Convert UTC timestamp to IST properly
+            utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
+            now = utc_time.astimezone(INDIA_TZ)
         else:
             now = datetime.now(INDIA_TZ)
         
@@ -2806,8 +2814,11 @@ def sync_security_scans():
             original_timestamp = scan.get('original_timestamp')
             
             # Use original timestamp from offline scan
+            # FIXED:
             if original_timestamp:
-                now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ)
+                # Convert UTC timestamp to IST properly
+                utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
+                now = utc_time.astimezone(INDIA_TZ)
             else:
                 now = datetime.now(INDIA_TZ)
             
@@ -2891,8 +2902,11 @@ def sync_security_scans():
                     print(f"🕒 Normalized out_time to IST: {out_time}")
                 
                 # ✅ Ensure now is also in IST (should already be)
+                # ✅ FIXED:
                 if original_timestamp:
-                    now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ)
+                    # Convert UTC timestamp to IST properly
+                    utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
+                    now = utc_time.astimezone(INDIA_TZ)
                 else:
                     now = datetime.now(INDIA_TZ)
                 
@@ -3111,8 +3125,11 @@ def sync_canteen_visits():
             roll_no = visit.get('roll_no')
             original_timestamp = visit.get('original_timestamp')
             
+            # FIXED:
             if original_timestamp:
-                now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ)
+                # Convert UTC timestamp to IST properly
+                utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
+                now = utc_time.astimezone(INDIA_TZ)
             else:
                 now = datetime.now(INDIA_TZ)
             

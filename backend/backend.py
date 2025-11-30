@@ -288,50 +288,7 @@ def debug_time_check():
     
     return jsonify(response_data), 200
         
-@app.after_request
-def convert_timestamps_to_ist(response):
-    """Convert all datetime objects in responses to IST - FIXED VERSION"""
-    if response.content_type == 'application/json':
-        try:
-            data = json.loads(response.get_data())
-            
-            print(f"🔍 DEBUG MIDDLEWARE INPUT - Raw data before conversion: {json.dumps(data, cls=CustomJSONEncoder, indent=2)[:500]}...")
-            
-            def convert_datetimes(obj):
-                if isinstance(obj, dict):
-                    return {k: convert_datetimes(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [convert_datetimes(item) for item in obj]
-                elif isinstance(obj, str):
-                    # FIX: Only convert strings that look like full ISO datetime with timezone
-                    # Don't convert date-only strings or time-only strings
-                    if len(obj) == 10 and obj.count('-') == 2:  # Date-only: "2025-11-30"
-                        return obj  # Leave date-only strings alone
-                    elif len(obj) == 8 and obj.count(':') == 2:  # Time-only: "07:22:09"
-                        return obj  # Leave time-only strings alone
-                    # Only try to parse if it looks like a full datetime
-                    try:
-                        # Handle ISO format dates with timezone
-                        if 'T' in obj and ('+' in obj or 'Z' in obj):
-                            dt = datetime.fromisoformat(obj.replace('Z', '+00:00'))
-                            if dt.tzinfo is None:
-                                dt = dt.replace(tzinfo=timezone.utc)
-                            return dt.astimezone(INDIA_TZ).isoformat()
-                        else:
-                            return obj  # Not a datetime string, leave it alone
-                    except (ValueError, AttributeError):
-                        return obj
-                return obj
-            
-            converted_data = convert_datetimes(data)
-            response.set_data(json.dumps(converted_data, cls=CustomJSONEncoder))
-            
-            print(f"🔍 DEBUG MIDDLEWARE OUTPUT - Final data sent to frontend: {response.get_data()[:500]}...")
-            
-        except Exception as e:
-            print(f"❌ DEBUG MIDDLEWARE ERROR: {e}")
-    
-    return response
+
 
 
 # Enhanced admin authentication with biometric flag

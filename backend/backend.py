@@ -1085,12 +1085,13 @@ def handle_security_scan(selected_role):
         is_offline_sync = data.get('offline_sync', False)
         original_timestamp = data.get('original_timestamp')
         
-        # Use original timestamp if this is an offline sync
+        # FIX: Ensure all datetime objects are timezone-aware
         if is_offline_sync and original_timestamp:
-            now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ) # Convert from milliseconds
+            # Convert from milliseconds and ensure timezone awareness
+            now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ)
             print(f"🔄 Processing offline sync: {roll_no}, {action}, original time: {now}")
         else:
-            now = datetime.now(INDIA_TZ)
+            now = datetime.now(INDIA_TZ)  # This is already timezone-aware
         
         student = db.students.find_one({'roll_no': roll_no})
         
@@ -1157,13 +1158,31 @@ def handle_security_scan(selected_role):
             if not latest_out_record:
                 return jsonify({'message': 'No active check out record found'}), 400
             
-            # Calculate time spent outside
-            out_time = latest_out_record['out_time']
+            # ✅ YOUR RECOMMENDED FIX: Store original and converted separately
+            raw_out_time = latest_out_record['out_time']  # Keep original for MongoDB query
+            out_time = raw_out_time  # For time calculation
+            
+            # ✅ Handle string timestamps (safety fix)
+            if isinstance(out_time, str):
+                try:
+                    # Convert string to datetime object
+                    out_time = datetime.fromisoformat(out_time.replace('Z', '+00:00'))
+                    print(f"🕒 Converted string out_time to datetime: {out_time}")
+                except Exception as e:
+                    print(f"❌ Error converting string out_time: {e}")
+                    return jsonify({'message': 'Invalid timestamp format in database'}), 500
+            
+            # ✅ Ensure out_time is timezone-aware for comparison
+            if out_time.tzinfo is None:
+                out_time = out_time.replace(tzinfo=INDIA_TZ)
+                print(f"🕒 Converted naive out_time to timezone-aware: {out_time}")
+            
+            # ✅ Now both datetimes are timezone-aware, safe to subtract
             time_spent = (now - out_time).total_seconds() / 60  # in minutes
             
-            # Update the record with in time
+            # ✅ Use raw_out_time (original) for MongoDB query to ensure match
             db.students.update_one(
-                {'roll_no': roll_no, 'in_out_records.out_time': out_time},
+                {'roll_no': roll_no, 'in_out_records.out_time': raw_out_time},
                 {'$set': {
                     'in_out_records.$.in_time': now,
                     'in_out_records.$.time_spent_minutes': time_spent,
@@ -1185,7 +1204,7 @@ def handle_security_scan(selected_role):
                 'offline_sync': is_offline_sync
             }
             
-            # In the same function, update the disciplinary record creation:
+            # Check if time exceeded limit
             if time_spent > max_allowed_time:
                 disciplinary_record = {
                     'date': now,
@@ -2768,7 +2787,6 @@ def sync_security_scans():
             else:
                 now = datetime.now(INDIA_TZ)
             
-            # Your existing security scan logic here
             student = db.students.find_one({'roll_no': roll_no})
             
             if not student:
@@ -2818,13 +2836,32 @@ def sync_security_scans():
                     results.append({'success': False, 'roll_no': roll_no, 'error': 'No active check out'})
                     continue
                 
-                # Calculate time spent outside
-                out_time = latest_out_record['out_time']
+                # ✅ FIX: Store original and converted separately for timezone handling
+                raw_out_time = latest_out_record['out_time']  # Keep original for MongoDB query
+                out_time = raw_out_time  # For time calculation
+                
+                # ✅ Handle string timestamps (safety fix)
+                if isinstance(out_time, str):
+                    try:
+                        # Convert string to datetime object
+                        out_time = datetime.fromisoformat(out_time.replace('Z', '+00:00'))
+                        print(f"🕒 Converted string out_time to datetime: {out_time}")
+                    except Exception as e:
+                        print(f"❌ Error converting string out_time: {e}")
+                        results.append({'success': False, 'roll_no': roll_no, 'error': 'Invalid timestamp format in database'})
+                        continue
+                
+                # ✅ Ensure out_time is timezone-aware for comparison
+                if out_time.tzinfo is None:
+                    out_time = out_time.replace(tzinfo=INDIA_TZ)
+                    print(f"🕒 Converted naive out_time to timezone-aware: {out_time}")
+                
+                # ✅ Now both datetimes are timezone-aware, safe to subtract
                 time_spent = (now - out_time).total_seconds() / 60
                 
-                # Update the record with in time
+                # ✅ Use raw_out_time (original) for MongoDB query to ensure match
                 db.students.update_one(
-                    {'roll_no': roll_no, 'in_out_records.out_time': out_time},
+                    {'roll_no': roll_no, 'in_out_records.out_time': raw_out_time},
                     {'$set': {
                         'in_out_records.$.in_time': now,
                         'in_out_records.$.time_spent_minutes': time_spent,
@@ -2834,11 +2871,44 @@ def sync_security_scans():
                     }}
                 )
                 
-                results.append({'success': True, 'roll_no': roll_no, 'action': 'in'})
+                # ✅ Optional: Check for time limit violation (same as main endpoint)
+                max_allowed_time = student.get('custom_allowed_time_minutes', 480)
+                
+                if time_spent > max_allowed_time:
+                    disciplinary_record = {
+                        'date': now,
+                        'time': now.strftime('%H:%M'),
+                        'description': f'Exceeded allowed time outside by {round(time_spent - max_allowed_time, 2)} minutes. '
+                                    f'Out at: {out_time.strftime("%Y-%m-%d %H:%M")}, '
+                                    f'In at: {now.strftime("%Y-%m-%d %H:%M")}, '
+                                    f'Allowed: {max_allowed_time} minutes',
+                        'action_taken': f'Warning issued for exceeding {max_allowed_time}-minute limit',
+                        'recorded_by': user_role,
+                        'recorded_at': now,
+                        'time_exceeded_minutes': round(time_spent - max_allowed_time, 2),
+                        'auto_generated': True,
+                        'offline_sync': True,
+                        'allowed_time_limit': max_allowed_time
+                    }
+                    
+                    db.students.update_one(
+                        {'roll_no': roll_no},
+                        {'$push': {'disciplinary_records': disciplinary_record}}
+                    )
+                    
+                    results.append({
+                        'success': True, 
+                        'roll_no': roll_no, 
+                        'action': 'in', 
+                        'warning': f'Time exceeded limit by {round(time_spent - max_allowed_time, 2)} minutes'
+                    })
+                else:
+                    results.append({'success': True, 'roll_no': roll_no, 'action': 'in'})
         
         return jsonify({'results': results}), 200
         
     except Exception as e:
+        print(f"❌ Error in sync_security_scans: {e}")
         return jsonify({'error': str(e)}), 500
 
 

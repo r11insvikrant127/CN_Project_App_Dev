@@ -50,31 +50,39 @@ MONGO_URL = os.environ.get(
 db = None
 client = None
 
-try:
-    print(f"🔗 Attempting MongoDB connection to: {MONGO_URL.split('@')[1].split('/')[0] if '@' in MONGO_URL else 'localhost'}")
-    
-    # Try connection with multiple SSL options
-    connection_options = {
-        'tls': True,
-        'tlsCAFile': certifi.where(),
-        'connectTimeoutMS': 10000,
-        'socketTimeoutMS': 30000,
-        'serverSelectionTimeoutMS': 15000,
-        'retryWrites': True,
-        'maxPoolSize': 50
-    }
-    
-    client = MongoClient(MONGO_URL, **connection_options)
-    
-    # Test the connection
-    client.admin.command('ping')
-    db = client["student_management"]
-    print("✅ MongoDB connected successfully!")
-    
-except Exception as e:
-    print(f"❌ MongoDB connection failed: {e}")
-    print("🔄 Application will start without database connectivity")
-    # Don't set db = None here since we already initialized it as None
+def initialize_mongodb_connection():
+    global db, client
+    try:
+        print(f"🔗 Attempting MongoDB connection to: {MONGO_URL.split('@')[1].split('/')[0] if '@' in MONGO_URL else 'localhost'}")
+        
+        # Try connection with multiple SSL options
+        connection_options = {
+            'tls': True,
+            'tlsCAFile': certifi.where(),
+            'connectTimeoutMS': 10000,
+            'socketTimeoutMS': 30000,
+            'serverSelectionTimeoutMS': 15000,
+            'retryWrites': True,
+            'maxPoolSize': 50
+        }
+        
+        client = MongoClient(MONGO_URL, **connection_options)
+        
+        # Test the connection
+        client.admin.command('ping')
+        db = client["student_management"]
+        print("✅ MongoDB connected successfully!")
+        return True
+        
+    except Exception as e:
+        print(f"❌ MongoDB connection failed: {e}")
+        print("🔄 Application will start without database connectivity")
+        db = None
+        client = None
+        return False
+
+# Initialize the connection
+db_connected = initialize_mongodb_connection()
 
 jwt = JWTManager(app)
 
@@ -122,6 +130,10 @@ SUBROLE_IDS = {
 # CORRECTED: Function to cleanup old movement records (older than 6 months)
 def cleanup_old_movement_records():
     try:
+        if db is None:
+            print("⚠️ Skipping cleanup - no database connection")
+            return
+            
         # Changed from 30 days to 6 months (180 days)
         cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=180)
         print(f"🔄 Cleaning up movement records older than: {cutoff_time}")
@@ -141,10 +153,13 @@ def cleanup_old_movement_records():
     except Exception as e:
         print(f"❌ Error during cleanup: {e}")
 
-
 def comprehensive_data_cleanup():
     """Clean up all old data older than 6 months"""
     try:
+        if db is None:
+            print("⚠️ Skipping comprehensive cleanup - no database connection")
+            return {'error': 'No database connection'}
+            
         cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=180)
         print(f"🧹 Starting comprehensive data cleanup for records older than: {cutoff_time}")
         
@@ -192,9 +207,15 @@ def comprehensive_data_cleanup():
         print(f"❌ Error during comprehensive cleanup: {e}")
         return {'error': str(e)}
 
-# Database initialization function
+
+
 def initialize_database():
     try:
+        # Check if database is connected
+        if db is None:
+            print("⚠️ Skipping database initialization - no MongoDB connection")
+            return
+        
         # Create collections if they don't exist
         collections = db.list_collection_names()
         
@@ -217,13 +238,21 @@ def initialize_database():
     except Exception as e:
         print(f"❌ Database initialization error: {e}")
 
-# Initialize database when app starts
-initialize_database()
+# Initialize database when app starts ONLY if connected
+if db_connected:
+    initialize_database()
+else:
+    print("⚠️ Skipping database initialization - no connection")
+
 
 # Enhanced security logging
 def log_security_event(event_type, user_role, device_id, ip_address, details=None):
     """Log security events for audit trail"""
     try:
+        if db is None:
+            print(f"⚠️ Security log skipped (no DB): {event_type} - {user_role} - {device_id}")
+            return
+            
         log_entry = {
             'event_type': event_type,
             'user_role': user_role,
@@ -236,13 +265,37 @@ def log_security_event(event_type, user_role, device_id, ip_address, details=Non
     except Exception as e:
         print(f"❌ Error logging security event: {e}")
         
-# ADD THE MIDDLEWARE RIGHT HERE - after app setup, before routes
+        
+@app.route('/api/debug/time-check', methods=['GET'])
+def debug_time_check():
+    """Simple endpoint to check what time backend returns - FIXED VERSION"""
+    current_ist = datetime.now(INDIA_TZ)
+    
+    # Test what actually gets returned to frontend - WITHOUT raw datetime object
+    response_data = {
+        'message': 'Time check - what frontend receives',
+        'timestamp_iso': current_ist.isoformat(),
+        'timestamp_string': current_ist.strftime('%Y-%m-%d %H:%M:%S %Z'),
+        'time_only': current_ist.strftime('%H:%M:%S'),
+        'date_only': current_ist.strftime('%Y-%m-%d'),  # This should stay as string
+        'timezone_offset': current_ist.strftime('%z'),
+        'debug_note': 'Check if all timestamps show +05:30 (IST)',
+        # Remove raw_datetime_object to avoid Flask auto-conversion to GMT
+    }
+    
+    print(f"🕒 DEBUG BACKEND TIME - Backend processing time (IST): {current_ist}")
+    print(f"🕒 DEBUG RESPONSE CONTENT - What we're sending to frontend: {response_data}")
+    
+    return jsonify(response_data), 200
+        
 @app.after_request
 def convert_timestamps_to_ist(response):
-    """Convert all datetime objects in responses to IST"""
+    """Convert all datetime objects in responses to IST - FIXED VERSION"""
     if response.content_type == 'application/json':
         try:
             data = json.loads(response.get_data())
+            
+            print(f"🔍 DEBUG MIDDLEWARE INPUT - Raw data before conversion: {json.dumps(data, cls=CustomJSONEncoder, indent=2)[:500]}...")
             
             def convert_datetimes(obj):
                 if isinstance(obj, dict):
@@ -250,21 +303,33 @@ def convert_timestamps_to_ist(response):
                 elif isinstance(obj, list):
                     return [convert_datetimes(item) for item in obj]
                 elif isinstance(obj, str):
-                    # Try to parse as datetime and convert to IST
+                    # FIX: Only convert strings that look like full ISO datetime with timezone
+                    # Don't convert date-only strings or time-only strings
+                    if len(obj) == 10 and obj.count('-') == 2:  # Date-only: "2025-11-30"
+                        return obj  # Leave date-only strings alone
+                    elif len(obj) == 8 and obj.count(':') == 2:  # Time-only: "07:22:09"
+                        return obj  # Leave time-only strings alone
+                    # Only try to parse if it looks like a full datetime
                     try:
-                        # Handle ISO format dates
-                        dt = datetime.fromisoformat(obj.replace('Z', '+00:00'))
-                        if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=timezone.utc)
-                        return dt.astimezone(INDIA_TZ).isoformat()
+                        # Handle ISO format dates with timezone
+                        if 'T' in obj and ('+' in obj or 'Z' in obj):
+                            dt = datetime.fromisoformat(obj.replace('Z', '+00:00'))
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            return dt.astimezone(INDIA_TZ).isoformat()
+                        else:
+                            return obj  # Not a datetime string, leave it alone
                     except (ValueError, AttributeError):
                         return obj
                 return obj
             
             converted_data = convert_datetimes(data)
             response.set_data(json.dumps(converted_data, cls=CustomJSONEncoder))
+            
+            print(f"🔍 DEBUG MIDDLEWARE OUTPUT - Final data sent to frontend: {response.get_data()[:500]}...")
+            
         except Exception as e:
-            print(f"Timestamp conversion error: {e}")
+            print(f"❌ DEBUG MIDDLEWARE ERROR: {e}")
     
     return response
 
@@ -2965,13 +3030,20 @@ if __name__ == "__main__":
     print("🚀 Starting Student Management System API Server...")
     print("📊 Version 2.0 - With Enhanced Analytics and Reporting")
     print("🔗 Available at: http://0.0.0.0:5000")
+    
+    # ADD DEBUG LINE HERE
+    print(f"🕒 DEBUG STARTUP - Server starting at UTC: {datetime.now(timezone.utc)}, IST: {datetime.now(INDIA_TZ)}")
+    
     print("🧹 Initializing data cleanup for records older than 6 months...")
-
-    # Run initial cleanup
-    try:
-        cleanup_stats = comprehensive_data_cleanup()
-        print(f"✅ Initial cleanup completed: {cleanup_stats}")
-    except Exception as e:
-        print(f"⚠️ Initial cleanup warning: {e}")
+    
+    # Run initial cleanup ONLY if database is connected
+    if db_connected:
+        try:
+            cleanup_stats = comprehensive_data_cleanup()
+            print(f"✅ Initial cleanup completed: {cleanup_stats}")
+        except Exception as e:
+            print(f"⚠️ Initial cleanup warning: {e}")
+    else:
+        print("⚠️ Skipping initial cleanup - no database connection")
 
     app.run(host="0.0.0.0", port=5000, debug=True)

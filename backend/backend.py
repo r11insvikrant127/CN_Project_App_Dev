@@ -1085,7 +1085,7 @@ def handle_security_scan(selected_role):
         is_offline_sync = data.get('offline_sync', False)
         original_timestamp = data.get('original_timestamp')
         
-        # FIX: Ensure all datetime objects are timezone-aware
+        # ✅ FIX: Ensure all datetime objects are timezone-aware
         if is_offline_sync and original_timestamp:
             # Convert from milliseconds and ensure timezone awareness
             now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ)
@@ -1158,27 +1158,51 @@ def handle_security_scan(selected_role):
             if not latest_out_record:
                 return jsonify({'message': 'No active check out record found'}), 400
             
-            # ✅ YOUR RECOMMENDED FIX: Store original and converted separately
+            # ✅ FIXED TIMEZONE HANDLING
             raw_out_time = latest_out_record['out_time']  # Keep original for MongoDB query
-            out_time = raw_out_time  # For time calculation
             
-            # ✅ Handle string timestamps (safety fix)
-            if isinstance(out_time, str):
+            # Handle different datetime formats and timezones
+            if isinstance(raw_out_time, str):
                 try:
                     # Convert string to datetime object
-                    out_time = datetime.fromisoformat(out_time.replace('Z', '+00:00'))
+                    out_time = datetime.fromisoformat(raw_out_time.replace('Z', '+00:00'))
                     print(f"🕒 Converted string out_time to datetime: {out_time}")
                 except Exception as e:
                     print(f"❌ Error converting string out_time: {e}")
                     return jsonify({'message': 'Invalid timestamp format in database'}), 500
+            else:
+                out_time = raw_out_time
             
-            # ✅ Ensure out_time is timezone-aware for comparison
+            # ✅ CRITICAL FIX: Normalize timezone to IST for comparison
             if out_time.tzinfo is None:
-                out_time = out_time.replace(tzinfo=INDIA_TZ)
-                print(f"🕒 Converted naive out_time to timezone-aware: {out_time}")
+                # If no timezone, assume it's UTC and convert to IST
+                out_time = out_time.replace(tzinfo=timezone.utc).astimezone(INDIA_TZ)
+                print(f"🕒 Converted naive out_time to IST: {out_time}")
+            elif out_time.tzinfo.utcoffset(out_time).total_seconds() == 0:
+                # If it's UTC, convert to IST
+                out_time = out_time.astimezone(INDIA_TZ)
+                print(f"🕒 Converted UTC out_time to IST: {out_time}")
+            else:
+                # Already in some timezone, ensure it's IST
+                out_time = out_time.astimezone(INDIA_TZ)
+                print(f"🕒 Normalized out_time to IST: {out_time}")
             
-            # ✅ Now both datetimes are timezone-aware, safe to subtract
+            # ✅ Ensure now is also in IST (should already be)
+            if is_offline_sync and original_timestamp:
+                now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ)
+            else:
+                now = datetime.now(INDIA_TZ)
+            
+            # ✅ DEBUG: Print both timestamps before calculation
+            print(f"🔍 DEBUG TIME CALCULATION - Security Scan:")
+            print(f"   Roll No: {roll_no}")
+            print(f"   Out time: {out_time} (tz: {out_time.tzinfo})")
+            print(f"   In time:  {now} (tz: {now.tzinfo})")
+            
+            # ✅ NOW both datetimes are properly in IST, safe to subtract
             time_spent = (now - out_time).total_seconds() / 60  # in minutes
+            
+            print(f"🔍 Calculated time spent: {time_spent} minutes")
             
             # ✅ Use raw_out_time (original) for MongoDB query to ensure match
             db.students.update_one(
@@ -2793,7 +2817,7 @@ def sync_security_scans():
                 results.append({'success': False, 'roll_no': roll_no, 'error': 'Student not found'})
                 continue
             
-            # Process check in/out (reuse your existing logic)
+            # Process check in/out
             if action == 'out':
                 # Check if student is already out
                 current_out_record = None
@@ -2836,28 +2860,52 @@ def sync_security_scans():
                     results.append({'success': False, 'roll_no': roll_no, 'error': 'No active check out'})
                     continue
                 
-                # ✅ FIX: Store original and converted separately for timezone handling
+                # ✅ FIXED TIMEZONE HANDLING
                 raw_out_time = latest_out_record['out_time']  # Keep original for MongoDB query
-                out_time = raw_out_time  # For time calculation
                 
-                # ✅ Handle string timestamps (safety fix)
-                if isinstance(out_time, str):
+                # Handle different datetime formats and timezones
+                if isinstance(raw_out_time, str):
                     try:
                         # Convert string to datetime object
-                        out_time = datetime.fromisoformat(out_time.replace('Z', '+00:00'))
+                        out_time = datetime.fromisoformat(raw_out_time.replace('Z', '+00:00'))
                         print(f"🕒 Converted string out_time to datetime: {out_time}")
                     except Exception as e:
                         print(f"❌ Error converting string out_time: {e}")
                         results.append({'success': False, 'roll_no': roll_no, 'error': 'Invalid timestamp format in database'})
                         continue
+                else:
+                    out_time = raw_out_time
                 
-                # ✅ Ensure out_time is timezone-aware for comparison
+                # ✅ CRITICAL FIX: Normalize timezone to IST for comparison
                 if out_time.tzinfo is None:
-                    out_time = out_time.replace(tzinfo=INDIA_TZ)
-                    print(f"🕒 Converted naive out_time to timezone-aware: {out_time}")
+                    # If no timezone, assume it's UTC and convert to IST
+                    out_time = out_time.replace(tzinfo=timezone.utc).astimezone(INDIA_TZ)
+                    print(f"🕒 Converted naive out_time to IST: {out_time}")
+                elif out_time.tzinfo.utcoffset(out_time).total_seconds() == 0:
+                    # If it's UTC, convert to IST
+                    out_time = out_time.astimezone(INDIA_TZ)
+                    print(f"🕒 Converted UTC out_time to IST: {out_time}")
+                else:
+                    # Already in some timezone, ensure it's IST
+                    out_time = out_time.astimezone(INDIA_TZ)
+                    print(f"🕒 Normalized out_time to IST: {out_time}")
                 
-                # ✅ Now both datetimes are timezone-aware, safe to subtract
+                # ✅ Ensure now is also in IST (should already be)
+                if original_timestamp:
+                    now = datetime.fromtimestamp(original_timestamp / 1000).replace(tzinfo=INDIA_TZ)
+                else:
+                    now = datetime.now(INDIA_TZ)
+                
+                # ✅ DEBUG: Print both timestamps before calculation
+                print(f"🔍 DEBUG TIME CALCULATION - Sync:")
+                print(f"   Roll No: {roll_no}")
+                print(f"   Out time: {out_time} (tz: {out_time.tzinfo})")
+                print(f"   In time:  {now} (tz: {now.tzinfo})")
+                
+                # ✅ NOW both datetimes are properly in IST, safe to subtract
                 time_spent = (now - out_time).total_seconds() / 60
+                
+                print(f"🔍 Calculated time spent: {time_spent} minutes")
                 
                 # ✅ Use raw_out_time (original) for MongoDB query to ensure match
                 db.students.update_one(
@@ -2871,7 +2919,7 @@ def sync_security_scans():
                     }}
                 )
                 
-                # ✅ Optional: Check for time limit violation (same as main endpoint)
+                # ✅ Optional: Check for time limit violation
                 max_allowed_time = student.get('custom_allowed_time_minutes', 480)
                 
                 if time_spent > max_allowed_time:
@@ -2900,10 +2948,18 @@ def sync_security_scans():
                         'success': True, 
                         'roll_no': roll_no, 
                         'action': 'in', 
-                        'warning': f'Time exceeded limit by {round(time_spent - max_allowed_time, 2)} minutes'
+                        'warning': f'Time exceeded limit by {round(time_spent - max_allowed_time, 2)} minutes',
+                        'time_spent_minutes': round(time_spent, 2)
                     })
                 else:
-                    results.append({'success': True, 'roll_no': roll_no, 'action': 'in'})
+                    results.append({
+                        'success': True, 
+                        'roll_no': roll_no, 
+                        'action': 'in',
+                        'time_spent_minutes': round(time_spent, 2)
+                    })
+            else:
+                results.append({'success': False, 'roll_no': roll_no, 'error': 'Invalid action'})
         
         return jsonify({'results': results}), 200
         

@@ -967,9 +967,14 @@ def get_student_with_role(roll_no, selected_role):
                 }), 403
         
         # Convert MongoDB objects to JSON-serializable format
+        # ✅ FIX: Ensure all datetime objects are properly serialized to IST
         def serialize_dates(obj):
             if isinstance(obj, (datetime, date)):
-                return obj.isoformat()
+                # Convert to IST before serialization
+                if obj.tzinfo is None:
+                    obj = obj.replace(tzinfo=timezone.utc)
+                obj_ist = obj.astimezone(INDIA_TZ)
+                return obj_ist.isoformat()
             elif isinstance(obj, ObjectId):
                 return str(obj)
             return obj
@@ -1101,13 +1106,21 @@ def handle_security_scan(selected_role):
             return jsonify({'message': 'Student not found'}), 404
         
         # Check hostel access
+        # ✅ FIX: Allow OUT scans from any hostel, only restrict IN scans
         if '_' in user_role:
             role_part, hostel_letter = user_role.split('_')
             required_hostel = hostel_letter.upper()
             
-            if student.get('hostel') != required_hostel:
-                return jsonify({'message': 'Access denied to this student'}), 403
+            # ONLY restrict for IN action, allow OUT from any hostel
+            if action == 'in' and student.get('hostel') != required_hostel:
+                return jsonify({
+                    'message': 'This student does not belong to your hostel',
+                    'student_hostel': student.get('hostel'),
+                    'user_hostel': required_hostel,
+                    'access_denied': True
+                }), 403
         
+        # In the OUT action block, replace with:
         if action == 'out':
             # Check if student is already out
             current_out_record = None
@@ -1122,11 +1135,11 @@ def handle_security_scan(selected_role):
                     'out_time': current_out_record['out_time'].strftime('%Y-%m-%d %H:%M:%S')
                 }), 400
             
-            # Record out time
+            # ✅ FIX: Always create OUT record with proper structure
             out_record = {
                 'out_time': now,
                 'in_time': None,
-                'action': 'out',
+                'action': 'out',  # ✅ CRITICAL: This must be 'out'
                 'recorded_by': user_role,
                 'recorded_at': now,
                 'status': 'outside',
@@ -1138,7 +1151,7 @@ def handle_security_scan(selected_role):
                 {'$push': {'in_out_records': out_record}}
             )
             
-            print(f"✅ Offline check-out recorded: {roll_no} at {now}")
+            print(f"✅ OUT record created: {roll_no} at {now}")
             
             return jsonify({
                 'message': 'Check out recorded successfully',

@@ -3180,6 +3180,31 @@ def sync_canteen_visits():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/debug/check-encoder', methods=['GET'])
+def debug_encoder():
+    """Check what CustomJSONEncoder is producing vs middleware"""
+    test_data = {
+        'datetime_utc': datetime(2025, 11, 30, 14, 37, 33, tzinfo=timezone.utc),
+        'datetime_naive': datetime(2025, 11, 30, 14, 37, 33),
+        'string_date': '2025-11-30T14:37:33Z',
+        'normal_string': 'Hello World',
+        'number': 123,
+        'list_with_dates': [
+            datetime(2025, 11, 30, 14, 37, 33, tzinfo=timezone.utc),
+            'normal string'
+        ]
+    }
+    
+    # Test CustomJSONEncoder directly
+    encoder = CustomJSONEncoder()
+    encoded_data = encoder.encode(test_data)
+    
+    return jsonify({
+        'custom_encoder_output': json.loads(encoded_data),
+        'encoder_working': True,
+        'timestamp': datetime.now(INDIA_TZ).isoformat()
+    })
 
 if __name__ == "__main__":
     # Also run cleanup when the app starts for any stale records

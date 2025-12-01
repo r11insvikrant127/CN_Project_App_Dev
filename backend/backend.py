@@ -936,6 +936,21 @@ def get_student_with_role(roll_no, selected_role):
                 return str(obj)
             return obj
         
+        # ✅ ADD DEBUGGING HERE - RIGHT BEFORE RETURNING DATA
+        print("🔍 MOVEMENT RECORDS DEBUG - Before sending to frontend:")
+        in_out_records = student.get('in_out_records', [])
+        print(f"📊 Total records to send: {len(in_out_records)}")
+        for i, record in enumerate(in_out_records[:3]):
+            print(f"  Record {i}:")
+            print(f"    Action: {record.get('action')}")
+            print(f"    Out Time: {record.get('out_time')} (type: {type(record.get('out_time'))})")
+            print(f"    In Time: {record.get('in_time')} (type: {type(record.get('in_time'))})")
+            # Check if it's a datetime object
+            if hasattr(record.get('out_time'), 'isoformat'):
+                print(f"    Out Time ISO: {record.get('out_time').isoformat()}")
+            if hasattr(record.get('in_time'), 'isoformat'):
+                print(f"    In Time ISO: {record.get('in_time').isoformat()}")
+        
         # ADMIN: Can access all data
         if user_role == 'admin':
             student_data = {
@@ -3162,6 +3177,54 @@ def debug_encoder():
         'encoder_working': True,
         'timestamp': datetime.now(INDIA_TZ).isoformat()
     })
+    
+@app.route('/api/debug/pdf-data-check', methods=['POST'])
+@jwt_required()
+def debug_pdf_data_check():
+    """Debug endpoint to check what data is being sent to PDF generator"""
+    try:
+        data = request.get_json()
+        
+        print("🔍 PDF DATA DEBUG - BACKEND SENDING:")
+        print(f"📊 Total records received for PDF: {len(data.get('movementRecords', []))}")
+        
+        if data.get('movementRecords'):
+            print("📄 First 3 records being sent:")
+            for i, record in enumerate(data.get('movementRecords')[:3]):
+                print(f"  Record {i}:")
+                print(f"    Action: {record.get('action')}")
+                print(f"    Out Time: {record.get('out_time')} (type: {type(record.get('out_time'))})")
+                print(f"    In Time: {record.get('in_time')} (type: {type(record.get('in_time'))})")
+                print(f"    Time Spent: {record.get('time_spent_minutes')}")
+        
+        # Check datetime serialization
+        test_records = []
+        for record in data.get('movementRecords', [])[:2]:
+            test_record = {
+                'action': record.get('action'),
+                'out_time_raw': record.get('out_time'),
+                'out_time_type': str(type(record.get('out_time'))),
+                'in_time_raw': record.get('in_time'),
+                'in_time_type': str(type(record.get('in_time'))),
+            }
+            test_records.append(test_record)
+        
+        return jsonify({
+            'debug_info': {
+                'total_records': len(data.get('movementRecords', [])),
+                'sample_records': test_records,
+                'backend_time': datetime.now(INDIA_TZ).isoformat(),
+                'student_info': {
+                    'name': data.get('studentName'),
+                    'roll_no': data.get('rollNo'),
+                    'hostel': data.get('hostel')
+                }
+            }
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ PDF Data Debug Error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == "__main__":
     # Also run cleanup when the app starts for any stale records

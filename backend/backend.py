@@ -105,9 +105,9 @@ login_attempts = {}
 # Session timeout in seconds (8 hours)
 SESSION_TIMEOUT = 8 * 60 * 60
 # Max login attempts before lockout
-MAX_LOGIN_ATTEMPTS = 5
+MAX_LOGIN_ATTEMPTS = 10
 # Lockout time in seconds (15 minutes)
-LOCKOUT_TIME = 15 * 60
+LOCKOUT_TIME = 5 * 60
 
 # Predefined unique IDs for each subrole
 SUBROLE_IDS = {

@@ -13,6 +13,7 @@ import time
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from datetime import datetime, timezone, timedelta, date
+import uuid
 # NEW IMPORTS (required for Atlas + Render)
 from pymongo import MongoClient
 import certifi
@@ -105,9 +106,9 @@ login_attempts = {}
 # Session timeout in seconds (8 hours)
 SESSION_TIMEOUT = 8 * 60 * 60
 # Max login attempts before lockout
-MAX_LOGIN_ATTEMPTS = 10
+MAX_LOGIN_ATTEMPTS = 5
 # Lockout time in seconds (15 minutes)
-LOCKOUT_TIME = 5 * 60
+LOCKOUT_TIME = 15 * 60
 
 # Predefined unique IDs for each subrole
 SUBROLE_IDS = {
@@ -3225,6 +3226,273 @@ def debug_pdf_data_check():
     except Exception as e:
         print(f"❌ PDF Data Debug Error: {e}")
         return jsonify({'error': str(e)}), 500
+    
+
+@app.route('/api/sync/students', methods=['GET'])
+@jwt_required()
+def sync_students():
+    """Sync students to local device database - minimal data only"""
+    try:
+        identity_string = get_jwt_identity()
+        if ':' in identity_string:
+            device_id, user_role = identity_string.split(':', 1)
+        
+        # Get query parameters
+        hostel = request.args.get('hostel')
+        limit = int(request.args.get('limit', 10000))
+        fields = request.args.get('fields', 'roll_no,name,hostel')
+        
+        # Build query based on role
+        query = {}
+        
+        # Filter by hostel if specified and user has hostel-specific role
+        if hostel and '_' in user_role:
+            query['hostel'] = hostel
+        elif user_role.startswith('super_') or user_role.startswith('security_') or user_role.startswith('canteen_'):
+            # Filter by user's hostel for non-admin roles
+            if '_' in user_role:
+                user_hostel = user_role.split('_')[1].upper()
+                query['hostel'] = user_hostel
+        
+        # Get only essential fields
+        projection = {
+            'roll_no': 1,
+            'name': 1,
+            'hostel': 1,
+            '_id': 0
+        }
+        
+        # Get students from database
+        students = list(db.students.find(query, projection).limit(limit))
+        
+        # Compress data for efficient transfer
+        compressed_students = []
+        for student in students:
+            compressed_students.append({
+                'roll_no': student.get('roll_no', ''),
+                'name': student.get('name', ''),
+                'hostel': student.get('hostel', '')
+            })
+        
+        print(f"📱 Student sync: Sending {len(compressed_students)} students to device {device_id}")
+        
+        return jsonify({
+            'success': True,
+            'count': len(compressed_students),
+            'students': compressed_students,
+            'query': query,
+            'hostel_filter': hostel if hostel else 'ALL',
+            'timestamp': datetime.now(INDIA_TZ).isoformat()
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error in student sync: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# Add this new endpoint for offline scanning validation
+@app.route('/api/student/validate-offline', methods=['POST'])
+@jwt_required()
+def validate_offline_scan():
+    """Validate student scan when offline - lightweight endpoint"""
+    try:
+        data = request.get_json()
+        roll_no = data.get('roll_no')
+        
+        # Minimal validation - just check if student exists
+        student = db.students.find_one(
+            {'roll_no': roll_no},
+            {'roll_no': 1, 'name': 1, 'hostel': 1, '_id': 0}
+        )
+        
+        if student:
+            return jsonify({
+                'valid': True,
+                'student': {
+                    'roll_no': student.get('roll_no'),
+                    'name': student.get('name'),
+                    'hostel': student.get('hostel')
+                }
+            }), 200
+        else:
+            return jsonify({
+                'valid': False,
+                'message': 'Student not found'
+            }), 404
+            
+    except Exception as e:
+        print(f"❌ Error in offline validation: {e}")
+        return jsonify({
+            'valid': False,
+            'error': str(e)
+        }), 500
+        
+        
+# Add this endpoint to your backend.py file
+@app.route('/api/feedback/submit', methods=['POST'])
+@jwt_required()
+def submit_feedback():
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['feedback', 'rating', 'category']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'message': f'Missing required field: {field}'}), 400
+        
+        # Get user info from token
+        identity_string = get_jwt_identity()
+        user_info = {}
+        if ':' in identity_string:
+            device_id, user_role = identity_string.split(':', 1)
+            user_info = {
+                'device_id': device_id,
+                'role': user_role
+            }
+        
+        # Create feedback record
+        feedback_record = {
+            'feedback_id': str(uuid.uuid4()),
+            'feedback_text': data['feedback'],
+            'rating': int(data['rating']),
+            'category': data['category'],
+            'email': data.get('email'),
+            'user_info': user_info,
+            'timestamp': datetime.now(INDIA_TZ),
+            'platform': data.get('platform', 'unknown'),
+            'app_version': data.get('app_version', '2.0'),
+            'status': 'pending_review'
+        }
+        
+        # Store in database (create feedback collection if it doesn't exist)
+        if 'feedback' not in db.list_collection_names():
+            db.create_collection('feedback')
+            db.feedback.create_index([('timestamp', -1)])
+            db.feedback.create_index([('category', 1)])
+            db.feedback.create_index([('rating', 1)])
+        
+        result = db.feedback.insert_one(feedback_record)
+        
+        # Log the feedback submission
+        log_security_event(
+            'feedback_submitted',
+            user_info.get('role', 'unknown'),
+            user_info.get('device_id', 'unknown'),
+            get_remote_address(),
+            {'feedback_id': feedback_record['feedback_id'], 'category': data['category']}
+        )
+        
+        return jsonify({
+            'message': 'Feedback submitted successfully',
+            'feedback_id': feedback_record['feedback_id'],
+            'submitted_at': feedback_record['timestamp'].isoformat()
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error submitting feedback: {e}")
+        return jsonify({'message': f'Error submitting feedback: {str(e)}'}), 500
+
+# Admin endpoint to view feedback
+@app.route('/api/admin/feedback', methods=['GET'])
+@jwt_required()
+def get_feedback():
+    try:
+        identity_string = get_jwt_identity()
+        if ':' in identity_string:
+            device_id, user_role = identity_string.split(':', 1)
+            if user_role != 'admin':
+                return jsonify({'message': 'Admin access required'}), 403
+        
+        # Get query parameters
+        category = request.args.get('category')
+        min_rating = request.args.get('min_rating', type=int)
+        days = request.args.get('days', 30, type=int)
+        limit = request.args.get('limit', 50, type=int)
+        
+        # Build query
+        query = {}
+        if category:
+            query['category'] = category
+        if min_rating:
+            query['rating'] = {'$gte': min_rating}
+        
+        cutoff_date = datetime.now(INDIA_TZ) - timedelta(days=days)
+        query['timestamp'] = {'$gte': cutoff_date}
+        
+        # Get feedback with pagination
+        feedback = list(db.feedback.find(
+            query,
+            {'_id': 0}
+        ).sort('timestamp', -1).limit(limit))
+        
+        # Get statistics
+        stats = {
+            'total_feedback': db.feedback.count_documents(query),
+            'average_rating': 0,
+            'by_category': {},
+            'by_rating': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+        }
+        
+        if feedback:
+            total_rating = sum(f['rating'] for f in feedback)
+            stats['average_rating'] = round(total_rating / len(feedback), 1)
+            
+            # Count by category
+            for f in feedback:
+                category = f.get('category', 'Unknown')
+                stats['by_category'][category] = stats['by_category'].get(category, 0) + 1
+                rating = f.get('rating', 0)
+                if 1 <= rating <= 5:
+                    stats['by_rating'][rating] = stats['by_rating'].get(rating, 0) + 1
+        
+        return jsonify({
+            'feedback': feedback,
+            'statistics': stats,
+            'query_parameters': {
+                'category': category,
+                'min_rating': min_rating,
+                'days': days,
+                'limit': limit
+            }
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'message': f'Error retrieving feedback: {str(e)}'}), 500
+    
+@app.route('/api/debug/feedback-test', methods=['POST'])
+def debug_feedback_test():
+    """Debug endpoint to test feedback submission"""
+    try:
+        print("📝 DEBUG: Feedback endpoint called")
+        print(f"📝 Headers: {dict(request.headers)}")
+        
+        data = request.get_json()
+        print(f"📝 Received data: {data}")
+        
+        if not data:
+            print("❌ DEBUG: No data received")
+            return jsonify({'error': 'No data received'}), 400
+            
+        print(f"📝 Feedback text: {data.get('feedback', 'No feedback text')}")
+        print(f"📝 Rating: {data.get('rating')}")
+        print(f"📝 Category: {data.get('category')}")
+        print(f"📝 Email: {data.get('email')}")
+        
+        return jsonify({
+            'message': 'Feedback received at debug endpoint',
+            'received_data': data,
+            'status': 'debug_only'
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ DEBUG Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    
 
 if __name__ == "__main__":
     # Also run cleanup when the app starts for any stale records

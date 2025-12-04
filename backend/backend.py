@@ -3462,37 +3462,115 @@ def get_feedback():
     except Exception as e:
         return jsonify({'message': f'Error retrieving feedback: {str(e)}'}), 500
     
-@app.route('/api/debug/feedback-test', methods=['POST'])
-def debug_feedback_test():
-    """Debug endpoint to test feedback submission"""
+@app.route('/api/students/hostel/<hostel>', methods=['GET'])
+@jwt_required()
+def get_students_by_hostel(hostel):
+    """
+    Get all students for a specific hostel (for offline caching by security/canteen staff)
+    Returns minimal data: roll_no, name, hostel only
+    """
     try:
-        print("📝 DEBUG: Feedback endpoint called")
-        print(f"📝 Headers: {dict(request.headers)}")
-        
-        data = request.get_json()
-        print(f"📝 Received data: {data}")
-        
-        if not data:
-            print("❌ DEBUG: No data received")
-            return jsonify({'error': 'No data received'}), 400
+        identity_string = get_jwt_identity()
+        if ':' in identity_string:
+            device_id, user_role = identity_string.split(':', 1)
             
-        print(f"📝 Feedback text: {data.get('feedback', 'No feedback text')}")
-        print(f"📝 Rating: {data.get('rating')}")
-        print(f"📝 Category: {data.get('category')}")
-        print(f"📝 Email: {data.get('email')}")
+            # Only allow security and canteen roles to access this endpoint
+            if not (user_role.startswith('security_') or user_role.startswith('canteen_')):
+                return jsonify({
+                    'message': 'This endpoint is only for security and canteen staff',
+                    'allowed_roles': ['security_*', 'canteen_*'],
+                    'your_role': user_role
+                }), 403
+            
+            # Security/canteen can only access their own hostel
+            if '_' in user_role:
+                user_hostel = user_role.split('_')[1].upper()
+                if user_hostel != hostel:
+                    return jsonify({
+                        'message': 'You can only access data for your own hostel',
+                        'user_hostel': user_hostel,
+                        'requested_hostel': hostel
+                    }), 403
+        
+        # Validate hostel parameter
+        valid_hostels = ['A', 'B', 'C', 'D']
+        if hostel not in valid_hostels:
+            return jsonify({
+                'message': 'Invalid hostel. Must be A, B, C, or D',
+                'valid_hostels': valid_hostels
+            }), 400
+        
+        print(f"📱 Student sync for offline: Hostel {hostel} by {user_role}")
+        
+        # Get all students for the hostel with minimal fields only
+        projection = {
+            '_id': 0,
+            'roll_no': 1,
+            'name': 1,
+            'hostel': 1
+        }
+        
+        students = list(db.students.find(
+            {'hostel': hostel},
+            projection
+        ).sort('roll_no', 1))
+        
+        response_data = {
+            'success': True,
+            'purpose': 'offline_caching',
+            'count': len(students),
+            'hostel': hostel,
+            'students': students,
+            'timestamp': datetime.now(INDIA_TZ).isoformat()
+        }
+        
+        print(f"✅ Offline student sync: {len(students)} students for Hostel {hostel}")
+        
+        return jsonify(response_data), 200
+        
+    except Exception as e:
+        print(f"❌ Error in get_students_by_hostel: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'Server error: {str(e)}'
+        }), 500
+
+
+@app.route('/api/sync/check-student-data/<hostel>', methods=['GET'])
+@jwt_required()
+def check_student_data_availability(hostel):
+    """Check if student data exists for offline use (security/canteen only)"""
+    try:
+        identity_string = get_jwt_identity()
+        if ':' in identity_string:
+            device_id, user_role = identity_string.split(':', 1)
+            
+            # Only for security and canteen
+            if not (user_role.startswith('security_') or user_role.startswith('canteen_')):
+                return jsonify({
+                    'available': False,
+                    'message': 'Offline sync is only available for security and canteen staff'
+                }), 403
+        
+        # Simple count of students in hostel
+        student_count = db.students.count_documents({'hostel': hostel})
         
         return jsonify({
-            'message': 'Feedback received at debug endpoint',
-            'received_data': data,
-            'status': 'debug_only'
+            'available': True,
+            'count': student_count,
+            'hostel': hostel,
+            'timestamp': datetime.now(INDIA_TZ).isoformat(),
+            'ready_for_offline': student_count > 0,
+            'message': f'Hostel {hostel} has {student_count} students available for offline scanning'
         }), 200
         
     except Exception as e:
-        print(f"❌ DEBUG Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-    
+        print(f"❌ Error checking student data: {e}")
+        return jsonify({
+            'available': False,
+            'count': 0,
+            'error': str(e)
+        }), 200    
 
 if __name__ == "__main__":
     # Also run cleanup when the app starts for any stale records

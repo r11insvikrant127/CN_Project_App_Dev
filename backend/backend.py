@@ -3572,6 +3572,36 @@ def check_student_data_availability(hostel):
             'error': str(e)
         }), 200    
 
+@app.route('/api/debug/check-hostel-data/<hostel>', methods=['GET'])
+def debug_check_hostel_data(hostel):
+    """Debug endpoint to check what students are in the backend for a hostel"""
+    try:
+        # Get all students for the hostel
+        students = list(db.students.find(
+            {'hostel': hostel},
+            {'_id': 0, 'roll_no': 1, 'name': 1, 'hostel': 1}
+        ).sort('roll_no', 1))
+        
+        # Group by department
+        departments = defaultdict(list)
+        for student in students:
+            roll_no = student.get('roll_no', '')
+            # Extract department code (first 2 letters after year)
+            if len(roll_no) >= 7:
+                dept = roll_no[4:6]  # e.g., 'CS', 'ME', 'EE'
+                departments[dept].append(student)
+        
+        return jsonify({
+            'hostel': hostel,
+            'total_students': len(students),
+            'students_by_department': dict(departments),
+            'all_students': students,
+            'debug_note': f'Hostel {hostel} has students from departments: {list(departments.keys())}'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == "__main__":
     # Also run cleanup when the app starts for any stale records
     print("🚀 Starting Student Management System API Server...")

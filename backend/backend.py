@@ -3468,6 +3468,13 @@ def get_students_by_hostel(hostel):
     """
     Get all students for a specific hostel (for offline caching by security/canteen staff)
     Returns minimal data: roll_no, name, hostel only
+    
+    NEW FEATURES:
+    1. Supports 'ALL' parameter to get all hostels
+    2. Compression support for large datasets
+    3. Pagination support
+    4. Minimal data only (3 fields)
+    5. Role-based access control
     """
     try:
         identity_string = get_jwt_identity()
@@ -3477,62 +3484,177 @@ def get_students_by_hostel(hostel):
             # Only allow security and canteen roles to access this endpoint
             if not (user_role.startswith('security_') or user_role.startswith('canteen_')):
                 return jsonify({
+                    'success': False,
                     'message': 'This endpoint is only for security and canteen staff',
                     'allowed_roles': ['security_*', 'canteen_*'],
-                    'your_role': user_role
+                    'your_role': user_role,
+                    'suggested_endpoint': '/api/sync/students' if user_role == 'admin' else 'Contact admin'
                 }), 403
             
-            # Security/canteen can only access their own hostel
-            if '_' in user_role:
-                user_hostel = user_role.split('_')[1].upper()
-                if user_hostel != hostel:
-                    return jsonify({
-                        'message': 'You can only access data for your own hostel',
-                        'user_hostel': user_hostel,
-                        'requested_hostel': hostel
-                    }), 403
+            # Security/canteen can access ALL hostels for offline storage
+            # (No longer restricting to their own hostel only)
+            print(f"📱 Student sync request: Hostel {hostel} by {user_role}")
+        
+        # Get query parameters
+        page = int(request.args.get('page', 1))
+        page_size = int(request.args.get('page_size', 0))  # 0 = all records
+        compress = request.args.get('compress', 'false').lower() == 'true'
+        fields = request.args.get('fields', 'minimal')  # minimal or all
         
         # Validate hostel parameter
-        valid_hostels = ['A', 'B', 'C', 'D']
+        valid_hostels = ['A', 'B', 'C', 'D', 'ALL']
         if hostel not in valid_hostels:
             return jsonify({
-                'message': 'Invalid hostel. Must be A, B, C, or D',
-                'valid_hostels': valid_hostels
+                'success': False,
+                'message': 'Invalid hostel. Must be A, B, C, D, or ALL',
+                'valid_hostels': valid_hostels,
+                'received_hostel': hostel
             }), 400
         
-        print(f"📱 Student sync for offline: Hostel {hostel} by {user_role}")
+        # Build query based on hostel parameter
+        if hostel == 'ALL':
+            query = {'hostel': {'$in': ['A', 'B', 'C', 'D']}}
+            display_hostel = 'ALL (A, B, C, D)'
+        else:
+            query = {'hostel': hostel}
+            display_hostel = hostel
         
-        # Get all students for the hostel with minimal fields only
+        print(f"📊 Fetching students for: {display_hostel}, Page: {page}, Page size: {page_size or 'ALL'}")
+        
+        # CRITICAL: Only return these 3 minimal fields for offline use
+        # DO NOT add more fields to keep storage minimal
         projection = {
             '_id': 0,
             'roll_no': 1,
             'name': 1,
             'hostel': 1
+            # NO OTHER FIELDS - this is intentional for minimal storage
         }
         
-        students = list(db.students.find(
-            {'hostel': hostel},
-            projection
-        ).sort('roll_no', 1))
+        # Get total count first (for pagination metadata)
+        total_count = db.students.count_documents(query)
         
-        response_data = {
+        # Apply pagination if requested
+        skip = (page - 1) * page_size if page_size > 0 else 0
+        limit = page_size if page_size > 0 else 0
+        
+        # Build query with sorting
+        find_query = db.students.find(query, projection)
+        
+        # Apply sorting (important for consistent pagination)
+        find_query = find_query.sort([('hostel', 1), ('roll_no', 1)])
+        
+        # Apply pagination
+        if skip > 0:
+            find_query = find_query.skip(skip)
+        if limit > 0:
+            find_query = find_query.limit(limit)
+        
+        # Execute query
+        students = list(find_query)
+        
+        # Calculate pagination metadata
+        total_pages = 1
+        if page_size > 0 and total_count > 0:
+            total_pages = (total_count + page_size - 1) // page_size
+        
+        # Prepare base response data
+        base_response = {
             'success': True,
             'purpose': 'offline_caching',
             'count': len(students),
+            'total_count': total_count,
             'hostel': hostel,
-            'students': students,
+            'hostel_display': display_hostel,
+            'fields_included': ['roll_no', 'name', 'hostel'],
+            'note': 'Only minimal fields included to reduce storage. Additional data available via /api/student/<roll_no>/<role>',
+            'pagination': {
+                'page': page,
+                'page_size': page_size if page_size > 0 else 'ALL',
+                'total_pages': total_pages if page_size > 0 else 1,
+                'has_more': page < total_pages if page_size > 0 else False,
+                'showing': f"{skip+1}-{skip+len(students)} of {total_count}" if page_size > 0 else f"ALL {total_count}"
+            },
+            'estimated_size_kb': (len(json.dumps(students)) / 1024) if students else 0,
             'timestamp': datetime.now(INDIA_TZ).isoformat()
         }
         
-        print(f"✅ Offline student sync: {len(students)} students for Hostel {hostel}")
+        print(f"✅ Found {len(students)} students for {display_hostel} (Total: {total_count})")
+        
+        # Handle compression if requested
+        if compress and students:
+            try:
+                import gzip
+                import io
+                
+                # Prepare data for compression
+                full_response = {
+                    **base_response,
+                    'students': students
+                }
+                
+                students_json = json.dumps(full_response, cls=CustomJSONEncoder)
+                original_size = len(students_json)
+                compressed = gzip.compress(students_json.encode('utf-8'))
+                compressed_size = len(compressed)
+                compression_ratio = 100 - (compressed_size * 100 / original_size) if original_size > 0 else 0
+                
+                print(f"📦 Compression: {original_size/1024:.1f}KB → {compressed_size/1024:.1f}KB ({compression_ratio:.1f}% saved)")
+                
+                # Update base response with compression info
+                base_response.update({
+                    'compression_applied': True,
+                    'original_size_kb': round(original_size / 1024, 2),
+                    'compressed_size_kb': round(compressed_size / 1024, 2),
+                    'compression_ratio': f"{compression_ratio:.1f}%",
+                    'uncompressed_size_kb': round(len(json.dumps(students)) / 1024, 2)
+                })
+                
+                # Create compressed response
+                response = make_response(compressed)
+                response.headers['Content-Type'] = 'application/gzip'
+                response.headers['Content-Encoding'] = 'gzip'
+                response.headers['X-Metadata'] = json.dumps(base_response)
+                response.headers['X-Student-Count'] = str(len(students))
+                
+                return response
+                
+            except Exception as compression_error:
+                print(f"⚠️ Compression failed, falling back to JSON: {compression_error}")
+                # Fall back to regular JSON response
+                base_response['compression_failed'] = True
+                base_response['compression_error'] = str(compression_error)
+        
+        # Regular JSON response (no compression or compression failed)
+        response_data = {
+            **base_response,
+            'students': students
+        }
         
         return jsonify(response_data), 200
         
     except Exception as e:
         print(f"❌ Error in get_students_by_hostel: {e}")
+        import traceback
+        traceback.print_exc()
+        
         return jsonify({
             'success': False,
-            'message': f'Server error: {str(e)}'
+            'message': f'Server error: {str(e)}',
+            'endpoint': '/api/students/hostel/<hostel>',
+            'valid_hostels': ['A', 'B', 'C', 'D', 'ALL'],
+            'common_parameters': {
+                'page': 'Page number (default: 1)',
+                'page_size': 'Records per page (0 = all)',
+                'compress': 'true/false (gzip compression)',
+                'fields': 'minimal (default) or all'
+            },
+            'example_urls': [
+                '/api/students/hostel/A?page=1&page_size=100',
+                '/api/students/hostel/ALL?compress=true',
+                '/api/students/hostel/B?fields=minimal'
+            ],
+            'timestamp': datetime.now(INDIA_TZ).isoformat()
         }), 500
 
 
@@ -3601,6 +3723,105 @@ def debug_check_hostel_data(hostel):
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    
+    
+@app.route('/api/students/all-minimal', methods=['GET'])
+@jwt_required()
+def get_all_students_minimal():
+    """
+    Get ALL students from ALL hostels with MINIMAL data only
+    Perfect for offline storage: roll_no, name, hostel only
+    """
+    try:
+        identity_string = get_jwt_identity()
+        if ':' in identity_string:
+            device_id, user_role = identity_string.split(':', 1)
+            
+            # Only security and canteen need offline data
+            if not (user_role.startswith('security_') or user_role.startswith('canteen_')):
+                return jsonify({
+                    'message': 'Offline student data is only for security and canteen staff'
+                }), 403
+        
+        print(f"📱 MINIMAL student sync for offline by {user_role}")
+        
+        # CRITICAL: Only these 3 fields - nothing else!
+        projection = {
+            '_id': 0,
+            'roll_no': 1,
+            'name': 1,
+            'hostel': 1
+        }
+        
+        # Get all students from all hostels
+        students = list(db.students.find(
+            {'hostel': {'$in': ['A', 'B', 'C', 'D']}},
+            projection
+        ).sort([('hostel', 1), ('roll_no', 1)]))
+        
+        # Calculate approximate data size
+        import sys
+        sample_size = len(json.dumps(students[0])) if students else 0
+        estimated_size_kb = (len(students) * sample_size) / 1024 if students else 0
+        
+        response = {
+            'success': True,
+            'purpose': 'offline_caching_minimal',
+            'count': len(students),
+            'fields_included': ['roll_no', 'name', 'hostel'],
+            'fields_excluded': ['room_no', 'course', 'branch', 'contact_no', 'email', 
+                               'guardian_name', 'guardian_phone', 'home_address', 
+                               'fee_status', 'admission_date', 'in_out_records',
+                               'disciplinary_records', 'medical_info'],
+            'students': students,
+            'estimated_size_kb': round(estimated_size_kb, 2),
+            'timestamp': datetime.now(INDIA_TZ).isoformat()
+        }
+        
+        print(f"✅ MINIMAL offline sync: {len(students)} students, ~{estimated_size_kb:.1f}KB")
+        print(f"   Fields: ONLY roll_no, name, hostel")
+        
+        return jsonify(response), 200
+        
+    except Exception as e:
+        print(f"❌ Error in get_all_students_minimal: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'Server error: {str(e)}'
+        }), 500
+        
+@app.route('/api/students/count', methods=['GET'])
+@jwt_required()
+def get_student_counts():
+    """
+    Get student counts for sync planning
+    Helps frontend decide if sync is needed
+    """
+    try:
+        identity_string = get_jwt_identity()
+        
+        counts = {}
+        total = 0
+        
+        for hostel in ['A', 'B', 'C', 'D']:
+            count = db.students.count_documents({'hostel': hostel})
+            counts[hostel] = count
+            total += count
+        
+        return jsonify({
+            'success': True,
+            'total_students': total,
+            'by_hostel': counts,
+            'average_per_hostel': total / 4 if total > 0 else 0,
+            'timestamp': datetime.now(INDIA_TZ).isoformat(),
+            'note': 'Counts include all students from each hostel'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 if __name__ == "__main__":
     # Also run cleanup when the app starts for any stale records

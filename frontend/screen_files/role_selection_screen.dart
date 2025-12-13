@@ -9,6 +9,8 @@ import 'package:provider/provider.dart';
 import 'theme_toggle_widget.dart';
 import 'app_themes.dart';
 import 'voice_command_mixin.dart';
+import 'feedback_screen.dart';
+import 'sync_service.dart'; // ⭐ ADD THIS LINE
 
 class RoleSelectionScreen extends StatefulWidget {
   final String authMethod; // 'fingerprint' or 'device'
@@ -40,6 +42,7 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> with VoiceCom
     });
   }
 
+
   @override
   Map<String, VoidCallback> getVoiceCommands() {
     return {
@@ -54,6 +57,13 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> with VoiceCom
       'logout': _logout,
       'help': _showVoiceHelpDialog,
       'go back': _logout,
+      
+      // Feedback commands - UPDATED
+      'feedback': () => _openFeedbackScreen(),
+      'give feedback': () => _openFeedbackScreen(),
+      'submit feedback': () => _openFeedbackScreen(),
+      'open feedback': () => _openFeedbackScreen(),
+      'feedback screen': () => _openFeedbackScreen(), // ADD THIS
     };
   }
   // Add this method:
@@ -62,6 +72,10 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> with VoiceCom
   }
   
   void _logout() {
+    // ⭐ ADD: Stop periodic sync
+    final syncService = SyncService();
+    syncService.stopPeriodicSync();
+    
     Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
   }
 
@@ -106,63 +120,69 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> with VoiceCom
             buildVoiceCommandButton(),
           ],
         ),
-        body: SafeArea(
-          child: SingleChildScrollView(
-            physics: BouncingScrollPhysics(),
-            child: Padding(
-              padding: EdgeInsets.all(20.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Welcome Header
-                  _buildWelcomeHeader(isDark),
-                  SizedBox(height: 20),
-                  
-                  // Authentication Status Card
-                  _buildAuthStatusCard(isDark),
-                  SizedBox(height: 28),
-                  
-                  // Roles Section Header
-                  Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 4),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Available Roles',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
+        body: Stack(
+          children: [
+            SafeArea(
+              child: SingleChildScrollView(
+                physics: BouncingScrollPhysics(),
+                child: Padding(
+                  padding: EdgeInsets.all(20.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Welcome Header
+                      _buildWelcomeHeader(isDark),
+                      SizedBox(height: 20),
+                      
+                      // Authentication Status Card
+                      _buildAuthStatusCard(isDark),
+                      SizedBox(height: 28),
+                      
+                      // Roles Section Header
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 4),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Available Roles',
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              'Choose your role to continue',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
                         ),
-                        SizedBox(height: 4),
-                        Text(
-                          'Choose your role to continue',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                      SizedBox(height: 20),
+                      
+                      // Roles Grid
+                      Container(
+                        height: MediaQuery.of(context).size.height * 0.5,
+                        child: _buildRoleGrid(isDark),
+                      ),
+                      
+                      // Footer Info
+                      SizedBox(height: 20),
+                      _buildFooterInfo(isDark),
+                      SizedBox(height: 60), // Extra space for floating button
+                    ],
                   ),
-                  SizedBox(height: 20),
-                  
-                  // Roles Grid
-                  Container(
-                    height: MediaQuery.of(context).size.height * 0.5,
-                    child: _buildRoleGrid(isDark),
-                  ),
-                  
-                  // Footer Info
-                  SizedBox(height: 20),
-                  _buildFooterInfo(isDark),
-                ],
+                ),
               ),
             ),
-          ),
+            _buildFeedbackButton(isDark),
+          ],
         ),
       ),
     );
@@ -559,6 +579,51 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> with VoiceCom
     );
   }
 
+  Widget _buildFeedbackButton(bool isDark) {
+    return Positioned(
+      bottom: 20,
+      right: 20,
+      child: FloatingActionButton.extended(
+        onPressed: () {
+          Navigator.push(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (context, animation, secondaryAnimation) =>
+                  FeedbackScreen(),
+              transitionsBuilder: (context, animation, secondaryAnimation, child) {
+                const begin = Offset(0.0, 1.0);
+                const end = Offset.zero;
+                const curve = Curves.easeInOut;
+                var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
+                var offsetAnimation = animation.drive(tween);
+
+                return SlideTransition(
+                  position: offsetAnimation,
+                  child: child,
+                );
+              },
+              transitionDuration: Duration(milliseconds: 300),
+            ),
+          );
+        },
+        backgroundColor: Theme.of(context).colorScheme.primary,
+        foregroundColor: Theme.of(context).colorScheme.onPrimary,
+        elevation: 6,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        icon: Icon(Icons.feedback_rounded, size: 20),
+        label: Text(
+          'Feedback',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildHeaderTimeWidget(bool isDark) {
     return StreamBuilder(
       stream: Stream.periodic(Duration(seconds: 1)),
@@ -635,6 +700,29 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> with VoiceCom
     );
   }
 
+  void _openFeedbackScreen() {
+    Navigator.push(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            FeedbackScreen(),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          const begin = Offset(0.0, 1.0);
+          const end = Offset.zero;
+          const curve = Curves.easeInOut;
+          var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
+          var offsetAnimation = animation.drive(tween);
+
+          return SlideTransition(
+            position: offsetAnimation,
+            child: child,
+          );
+        },
+        transitionDuration: Duration(milliseconds: 300),
+      ),
+    );
+  }
+
   void _navigateToRole(String role) {
     Navigator.push(
       context,
@@ -672,6 +760,8 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> with VoiceCom
       'logout': 'Log out and return to login',
       'go back': 'Return to previous screen',
       'help': 'Show this help dialog',
+      'feedback': 'Open feedback screen',
+      'give feedback': 'Open feedback screen',
       'dark': 'Switch to dark theme',
       'dark theme': 'Switch to dark theme', 
       'light': 'Switch to light theme', 

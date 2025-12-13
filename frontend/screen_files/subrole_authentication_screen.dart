@@ -8,9 +8,10 @@ import 'app_themes.dart';
 import 'voice_command_mixin.dart';
 import 'biometric_auth_service.dart';
 import 'biometric_auth_widget.dart';
+import 'sync_service.dart';
+import 'student_db_helper.dart';
 
-const String kBaseUrl = "http://192.168.29.119:5000";
-//const String kBaseUrl = "http://10.20.55.59:5000";
+const String kBaseUrl = "https://cn-project-app-dev.onrender.com";
 
 class SubroleAuthenticationScreen extends StatefulWidget {
   final String mainRole;
@@ -811,33 +812,96 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         
-        if (data['authenticated'] == true) {
-          final accessToken = data['access_token'];
-          
-          // Store session token for biometric auth if this was unique ID login
-          if (!_isBiometricAuth) {
-            await BiometricAuthService.storeSessionTokenForRole(subrole, accessToken);
+      if (data['authenticated'] == true) {
+        final accessToken = data['access_token'];
+        
+        // Store session token for biometric auth if this was unique ID login
+        if (!_isBiometricAuth) {
+          await BiometricAuthService.storeSessionTokenForRole(subrole, accessToken);
+        }
+        
+        await prefs.setString('access_token', accessToken);
+        await prefs.setString('current_role', subrole);
+        await prefs.setString('current_hostel', hostel);
+        await prefs.setString('hostel', hostel);
+        await prefs.setString('username', data['username'] ?? subrole);
+        
+        // ⭐ VERIFY SAVED DATA
+        print('🔍 DEBUG: ✅ Authentication successful for $subrole');
+        
+        // ⭐ NEW: Show initial success message
+        _showStatusMessage('✅ Authentication Successful!', isSuccess: true);
+        await Future.delayed(Duration(seconds: 1));
+
+        // ⭐⭐⭐ ENHANCED SYNC LOGIC FOR OFFLINE-FIRST APPROACH ⭐⭐⭐
+        if (widget.mainRole == 'security' || widget.mainRole == 'canteen') {
+          try {                  
+            final syncService = SyncService();
+            final studentDB = StudentDBHelper();
+            
+            // ✅ NEW: Get current offline database status
+            final statusBefore = await syncService.getStudentDataStatus();
+            print('🔍 DEBUG: ===== BEFORE SYNC =====');
+            print('🔍 DEBUG: Has complete sync: ${statusBefore['has_complete_sync']}');
+            print('🔍 DEBUG: Total students: ${statusBefore['total_student_count']}');
+            print('🔍 DEBUG: By hostel: ${statusBefore['by_hostel']}');
+                      
+            // ✅ FIXED: Use enhanced sync that gets ALL students
+            final syncSuccess = await syncService.checkAndSyncStudentData(forceSync: false);
+            
+            // Get updated status
+            final statusAfter = await syncService.getStudentDataStatus();
+            
+            print('🔍 DEBUG: ===== AFTER SYNC =====');
+            print('🔍 DEBUG: Has complete sync: ${statusAfter['has_complete_sync']}');
+            print('🔍 DEBUG: Total students: ${statusAfter['total_student_count']}');
+            print('🔍 DEBUG: By hostel: ${statusAfter['by_hostel']}');
+            
+            if (syncSuccess) {
+              final totalCount = statusAfter['total_student_count'] ?? 0;
+              final byHostel = statusAfter['by_hostel'] as Map<String, dynamic>;
+              final currentHostelCount = statusAfter['current_hostel_count'] ?? 0;
+              
+              if (totalCount < 0) {
+                _showStatusMessage('⚠️ No student data available for offline use', isError: false);
+              }
+            } else {
+              // Check what we already have
+              final existingCount = statusBefore['total_student_count'] ?? 0;
+              if (existingCount > 0) {
+                _showStatusMessage('⚠️ Using existing offline data ($existingCount students)', isError: false);
+              } else {
+                _showStatusMessage('❌ Failed to download student data. Online mode only.', isError: true);
+              }
+            }
+            
+            await Future.delayed(Duration(seconds: 2));
+            
+            // Start periodic sync in background
+            syncService.startPeriodicSync();
+            
+          } catch (e) {
+            print('🔍 DEBUG: Sync error after login: $e');
+            _showStatusMessage('✅ Authentication complete. Online mode active.', isSuccess: true);
+            await Future.delayed(Duration(seconds: 1));
           }
-          
-          await prefs.setString('access_token', accessToken);
-          await prefs.setString('current_role', subrole);
-          await prefs.setString('current_hostel', hostel);
-          await prefs.setString('username', data['username'] ?? subrole);
-          
-          _showStatusMessage('Authentication Successful!', isSuccess: true);
-          
-          Future.delayed(Duration(seconds: 1), () {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => StudentLookupScreen(
-                  selectedRole: subrole,
-                  selectedHostel: hostel,
-                ),
-              ),
-            );
-          });
         } else {
+          // For admin/super roles, just show success
+          _showStatusMessage('✅ Authentication complete', isSuccess: true);
+          await Future.delayed(Duration(seconds: 1));
+        }
+        
+        // Navigate to StudentLookupScreen
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (context) => StudentLookupScreen(
+              selectedRole: subrole,
+              selectedHostel: hostel,
+            ),
+          ),
+        );
+      } else {
           _showStatusMessage('Authentication failed. Please try again.', isError: true);
         }
       } else if (response.statusCode == 401) {

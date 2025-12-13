@@ -1,5 +1,6 @@
-// pdf_report_service.dart - COMPLETE FIXED VERSION WITH PROPER LAYOUT
+// pdf_report_service.dart - COMPLETE FIXED VERSION WITH ALL FIXES
 import 'dart:io';
+import 'dart:math'; // ✅ ADD THIS IMPORT for min() function
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:path_provider/path_provider.dart';
@@ -67,6 +68,30 @@ class PDFReportService {
     PDFReportConfig config = const PDFReportConfig(),
   }) async {
     try {
+      // ✅ ADD THIS LINE RIGHT AT THE BEGINNING OF THE METHOD
+      testDateTimeParsing(); // Temporary - remove after testing
+
+      // ✅ FIX 6: Add detailed debugging
+      print('🔍 PDF GENERATION DEBUG:');
+      print('  Student: $studentName ($rollNo)');
+      print('  Total records received: ${movementRecords.length}');
+      
+      if (movementRecords.isNotEmpty) {
+        print('  Record breakdown:');
+        var outCount = movementRecords.where((r) => r['action'] == 'out').length;
+        var inCount = movementRecords.where((r) => r['action'] == 'in').length;
+        print('    OUT records: $outCount');
+        print('    IN records: $inCount');
+        
+        // Print first few records for debugging
+        for (var i = 0; i < min(3, movementRecords.length); i++) {
+          var record = movementRecords[i];
+          print('    Record $i: action=${record['action']}, out_time=${record['out_time']}, in_time=${record['in_time']}');
+        }
+      } else {
+        print('  ❌ NO MOVEMENT RECORDS RECEIVED');
+      }
+
       // Input validation
       if (movementRecords.isEmpty) {
         throw Exception('No movement records provided');
@@ -74,6 +99,14 @@ class PDFReportService {
       if (studentName.isEmpty || rollNo.isEmpty || hostel.isEmpty) {
         throw Exception('Student information is incomplete');
       }
+
+      // ✅ ADD THIS DEBUG CALL RIGHT AFTER INPUT VALIDATION
+      await debugBackendData(
+        movementRecords: movementRecords,
+        studentName: studentName,
+        rollNo: rollNo,
+        hostel: hostel,
+      );
 
       final pdf = pw.Document();
       
@@ -493,11 +526,11 @@ class PDFReportService {
                 ),
               ),
               
-              // Date and time
+              // Date and time with IST
               pw.Text(
-                formattedDate,
+                '$formattedDate IST', // ✅ FIX: Add IST indicator
                 style: const pw.TextStyle(
-                  fontSize: 10, // REDUCED from 11
+                  fontSize: 10,
                   fontWeight: pw.FontWeight.bold,
                   color: PdfColors.grey700,
                 ),
@@ -514,7 +547,7 @@ class PDFReportService {
               _buildDetailRow('Action Type:', isCheckOut ? 'Checked Out' : 'Checked In'),
               
               if (inTime != null) 
-                _buildDetailRow('Return Time:', _formatDateTime(inTime)),
+                _buildDetailRow('Return Time:', _formatDateTime(inTime)), // Already fixed above
               
               if (duration != null) 
                 _buildDetailRow('Time Spent:', _formatDuration(duration)),
@@ -821,13 +854,16 @@ class PDFReportService {
     );
   }
 
-  // Improved date range filtering
+  // ✅ FIX 5: Fix date filtering logic with proper timezone handling
   List<dynamic> _filterRecordsByDateRange(
     List<dynamic> records,
-    DateTime startDate,
-    DateTime endDate,
+    DateTime startDate,  // Local time (IST)
+    DateTime endDate,    // Local time (IST)
   ) {
     final filteredRecords = <dynamic>[];
+
+    print('🔍 DEBUG FILTERING: ${records.length} total records');
+    print('  Date Range: ${_formatDateTime(startDate)} to ${_formatDateTime(endDate)}');
 
     for (var record in records) {
       final outDate = _parseDateTime(record['out_time']);
@@ -835,16 +871,283 @@ class PDFReportService {
 
       DateTime? recordDate = outDate ?? inDate;
 
-      if (recordDate == null) continue;
+      if (recordDate == null) {
+        print('  ⚠️ Skipping record - no valid date: ${record['action']}');
+        continue;
+      }
 
-      // inclusive range check
+      // ✅ FIX: Both dates are now in local timezone for proper comparison
       if (!recordDate.isBefore(startDate) && !recordDate.isAfter(endDate)) {
         filteredRecords.add(record);
+        print('  ✅ INCLUDED: ${_formatDateTime(recordDate)} - ${record['action']}');
+      } else {
+        print('  ❌ EXCLUDED: ${_formatDateTime(recordDate)} - ${record['action']}');
       }
     }
 
+    print('✅ Filtered ${filteredRecords.length} records for range');
     return filteredRecords;
   }
+
+  DateTime? _parseDateTime(dynamic dateTime) {
+    print('🕒 PARSING DEBUG - Input: $dateTime (type: ${dateTime.runtimeType})');
+    
+    try {
+      if (dateTime == null) {
+        print('  ➡️ Return: null (input was null)');
+        return null;
+      }
+      
+      if (dateTime is DateTime) {
+        final result = dateTime.isUtc ? dateTime.toLocal() : dateTime;
+        print('  ➡️ Return: $result (was DateTime, converted to local)');
+        return result;
+      }
+      
+      if (dateTime is String) {
+        print('  🔍 Attempting to parse as string...');
+        
+        // ✅ NEW: Handle RFC 1123 format (Sun, 30 Nov 2025 14:37:33 GMT)
+        // ✅ FIXED: Handle RFC 1123 format (Sun, 30 Nov 2025 14:37:33 GMT)
+        final rfc1123Regex = RegExp(r'^(\w{3}), (\d{1,2}) (\w{3}) (\d{4}) (\d{1,2}):(\d{2}):(\d{2}) GMT$');
+        final rfc1123Match = rfc1123Regex.firstMatch(dateTime);
+        if (rfc1123Match != null) {
+          try {
+            final dayName = rfc1123Match.group(1); // Sun
+            final day = int.parse(rfc1123Match.group(2)!); // 30
+            final monthStr = rfc1123Match.group(3)!; // Nov
+            final year = int.parse(rfc1123Match.group(4)!); // 2025
+            final hour = int.parse(rfc1123Match.group(5)!); // 14
+            final minute = int.parse(rfc1123Match.group(6)!); // 37
+            final second = int.parse(rfc1123Match.group(7)!); // 33
+            
+            // Convert month name to number
+            final monthMap = {
+              'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+              'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
+            };
+            final month = monthMap[monthStr];
+            
+            if (month != null) {
+              print('  🔍 RFC 1123 match - Day: $day, Month: $month, Year: $year, Hour: $hour, Minute: $minute, Second: $second');
+              
+              // ✅ CRITICAL FIX: Create as UTC time, then convert to local
+              DateTime parsed = DateTime.utc(year, month, day, hour, minute, second);
+              final result = parsed.toLocal(); // This converts UTC to IST (GMT+5:30)
+              
+              print('  ✅ RFC 1123 parse successful - UTC: $parsed, Local: $result');
+              return result;
+            } else {
+              print('  ❌ RFC 1123 parse failed: Invalid month "$monthStr"');
+            }
+          } catch (e) {
+            print('  ❌ RFC 1123 date parsing failed: $e');
+          }
+        } else {
+          print('  ❌ No RFC 1123 pattern match');
+        }
+        
+        // Handle ISO format with timezone (your existing code)
+        try {
+          DateTime parsed = DateTime.parse(dateTime);
+          final result = parsed.isUtc ? parsed.toLocal() : parsed;
+          print('  ✅ ISO parse successful: $result');
+          return result;
+        } catch (e) {
+          print('  ❌ ISO parsing failed: $e');
+          // Fall back to manual parsing
+        }
+        
+        // Handle AM/PM format (your existing code)
+        final ampmRegex = RegExp(r'^(\d{1,2})/(\d{1,2})/(\d{4}) (\d{1,2}):(\d{2})\s*(AM|PM)?', caseSensitive: false);
+        final ampmMatch = ampmRegex.firstMatch(dateTime);
+        if (ampmMatch != null) {
+          try {
+            final day = int.parse(ampmMatch.group(1)!);
+            final month = int.parse(ampmMatch.group(2)!);
+            final year = int.parse(ampmMatch.group(3)!);
+            var hour = int.parse(ampmMatch.group(4)!);
+            final minute = int.parse(ampmMatch.group(5)!);
+            final period = ampmMatch.group(6)?.toUpperCase();
+
+            print('  🔍 AM/PM match - Day: $day, Month: $month, Year: $year, Hour: $hour, Minute: $minute, Period: $period');
+
+            // Handle 12-hour format
+            if (period == 'PM' && hour < 12) hour += 12;
+            if (period == 'AM' && hour == 12) hour = 0;
+
+            // Validate date components
+            if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+              DateTime parsed = DateTime(year, month, day, hour, minute);
+              final result = parsed.toLocal();
+              print('  ✅ AM/PM parse successful: $result');
+              return result;
+            } else {
+              print('  ❌ AM/PM parse failed: Invalid date components');
+            }
+          } catch (e) {
+            print('  ❌ AM/PM date parsing failed: $e');
+          }
+        } else {
+          print('  ❌ No AM/PM pattern match');
+        }
+        
+        // Handle format: "01/11/2025 00:00:00" (DD/MM/YYYY HH:MM:SS) - your existing code
+        if (dateTime.contains('/') && dateTime.contains(':')) {
+          try {
+            final parts = dateTime.split(' ');
+            if (parts.length >= 1) {
+              final datePart = parts[0];
+              final dateParts = datePart.split('/');
+              
+              if (dateParts.length == 3) {
+                final day = int.parse(dateParts[0]);
+                final month = int.parse(dateParts[1]);
+                final year = int.parse(dateParts[2]);
+                
+                int hour = 0, minute = 0, second = 0;
+                if (parts.length >= 2) {
+                  final timePart = parts[1];
+                  final timeParts = timePart.split(':');
+                  if (timeParts.length >= 3) {
+                    hour = int.parse(timeParts[0]);
+                    minute = int.parse(timeParts[1]);
+                    second = int.parse(timeParts[2]);
+                  }
+                }
+                
+                print('  🔍 DD/MM/YYYY match - Day: $day, Month: $month, Year: $year, Hour: $hour, Minute: $minute, Second: $second');
+                
+                DateTime parsed = DateTime(year, month, day, hour, minute, second);
+                final result = parsed.toLocal();
+                print('  ✅ DD/MM/YYYY parse successful: $result');
+                return result;
+              } else {
+                print('  ❌ DD/MM/YYYY parse failed: Invalid date parts count');
+              }
+            } else {
+              print('  ❌ DD/MM/YYYY parse failed: No space separator found');
+            }
+          } catch (e) {
+            print('  ❌ DD/MM/YYYY parsing failed: $e');
+          }
+        } else {
+          print('  ❌ No DD/MM/YYYY pattern match');
+        }
+        
+        // Check for other common formats
+        if (dateTime.contains('-') && dateTime.contains('T')) {
+          print('  🔍 Detected ISO-like format but parsing failed');
+        }
+        
+        print('  ❌ All string parsing attempts failed');
+        return null;
+      }
+      
+      // Handle MongoDB format (your existing code)
+      if (dateTime is Map && dateTime.containsKey('\$date')) {
+        try {
+          print('  🔍 MongoDB format detected');
+          DateTime parsed = DateTime.parse(dateTime['\$date']);
+          final result = parsed.toLocal();
+          print('  ✅ MongoDB date parsing successful: $result');
+          return result;
+        } catch (e) {
+          print('  ❌ MongoDB date parsing failed: $e');
+        }
+      }
+      
+      // Handle other Map formats
+      if (dateTime is Map) {
+        print('  🔍 Map format detected but no \$date key. Keys: ${dateTime.keys}');
+      }
+      
+      print('  ❌ No compatible format detected');
+      return null;
+      
+    } catch (e) {
+      print('❌ CRITICAL PARSING ERROR: $e');
+      print('  Input was: $dateTime (type: ${dateTime.runtimeType})');
+      return null;
+    }
+  }
+
+  // ✅ ADD THIS TEST METHOD RIGHT AFTER _parseDateTime
+  void testDateTimeParsing() {
+    print('🧪 TESTING DATE TIME PARSING');
+    final testDates = [
+      '2024-01-15T14:30:00Z', // ISO UTC
+      '2024-01-15T14:30:00+05:30', // ISO with offset
+      '15/01/2024 14:30:00', // DD/MM/YYYY
+      '01/15/2024 02:30 PM', // MM/DD/YYYY with AM/PM
+      'Sun, 30 Nov 2025 14:37:33 GMT', // ✅ NEW: RFC 1123 format
+      'invalid-date', // Should fail
+      null, // Should return null
+    ];
+    
+    for (final testDate in testDates) {
+      print('\n--- Testing: $testDate ---');
+      final result = _parseDateTime(testDate);
+      print('Final result: $result');
+    }
+  }
+
+  // Add this method to your PDFReportService class
+  Future<void> debugBackendData({
+    required List<dynamic> movementRecords,
+      required String studentName,
+      required String rollNo,
+      required String hostel,
+    }) async {
+      print('🔍 FRONTEND DEBUG - DATA RECEIVED FROM BACKEND:');
+      print('  Student: $studentName ($rollNo)');
+      print('  Hostel: $hostel');
+      print('  Total records: ${movementRecords.length}');
+      
+      if (movementRecords.isNotEmpty) {
+        print('  📄 First 3 records analysis:');
+        for (var i = 0; i < min(3, movementRecords.length); i++) {
+          final record = movementRecords[i];
+          print('    Record $i:');
+          print('      Action: ${record['action']}');
+          print('      Out Time: ${record['out_time']} (runtimeType: ${record['out_time']?.runtimeType})');
+          print('      In Time: ${record['in_time']} (runtimeType: ${record['in_time']?.runtimeType})');
+          print('      Time Spent: ${record['time_spent_minutes']}');
+          
+          // Test parsing
+          final outTimeParsed = _parseDateTime(record['out_time']);
+          final inTimeParsed = _parseDateTime(record['in_time']);
+          print('      PARSED RESULTS:');
+          print('        Out Time Parsed: $outTimeParsed');
+          print('        In Time Parsed: $inTimeParsed');
+          
+          // Test formatting
+          if (outTimeParsed != null) {
+            print('        Formatted Out: ${_formatDateTime(outTimeParsed)}');
+          }
+          if (inTimeParsed != null) {
+            print('        Formatted In: ${_formatDateTime(inTimeParsed)}');
+          }
+        }
+      } else {
+        print('  ❌ NO RECORDS RECEIVED');
+      }
+      
+      // Count actions
+      final outCount = movementRecords.where((r) => r['action'] == 'out').length;
+      final inCount = movementRecords.where((r) => r['action'] == 'in').length;
+      print('  📊 Action breakdown: OUT=$outCount, IN=$inCount');
+      
+      // Check for any parsing issues
+      int parseFailures = 0;
+      for (var record in movementRecords) {
+        final outTime = _parseDateTime(record['out_time']);
+        if (outTime == null && record['out_time'] != null) {
+          parseFailures++;
+        }
+      }
+      print('  ⚠️ Parse failures: $parseFailures');
+    }
 
   // UPDATED: Header page with accurate page numbers in report structure
   pw.Widget _buildHeaderPage({
@@ -1343,99 +1646,6 @@ class PDFReportService {
     }
   }
 
-  // Improved date parsing with AM/PM support
-  DateTime? _parseDateTime(dynamic dateTime) {
-    try {
-      if (dateTime == null) return null;
-      
-      if (dateTime is DateTime) {
-        return dateTime;
-      }
-      
-      if (dateTime is String) {
-        // Handle DD/MM/YYYY HH:MM AM/PM format
-        final ampmRegex = RegExp(r'^(\d{1,2})/(\d{1,2})/(\d{4}) (\d{1,2}):(\d{2})\s*(AM|PM)?', caseSensitive: false);
-        final ampmMatch = ampmRegex.firstMatch(dateTime);
-        if (ampmMatch != null) {
-          try {
-            final day = int.parse(ampmMatch.group(1)!);
-            final month = int.parse(ampmMatch.group(2)!);
-            final year = int.parse(ampmMatch.group(3)!);
-            var hour = int.parse(ampmMatch.group(4)!);
-            final minute = int.parse(ampmMatch.group(5)!);
-            final period = ampmMatch.group(6)?.toUpperCase();
-
-            // Handle 12-hour format
-            if (period == 'PM' && hour < 12) hour += 12;
-            if (period == 'AM' && hour == 12) hour = 0;
-
-            // Validate date components
-            if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-              return DateTime(year, month, day, hour, minute);
-            }
-          } catch (e) {
-            print('⚠️ AM/PM date parsing failed: $e');
-          }
-        }
-        
-        // Handle format: "01/11/2025 00:00:00" (DD/MM/YYYY HH:MM:SS)
-        if (dateTime.contains('/') && dateTime.contains(':')) {
-          try {
-            final parts = dateTime.split(' ');
-            if (parts.length >= 1) {
-              final datePart = parts[0];
-              final dateParts = datePart.split('/');
-              
-              if (dateParts.length == 3) {
-                final day = int.parse(dateParts[0]);
-                final month = int.parse(dateParts[1]);
-                final year = int.parse(dateParts[2]);
-                
-                int hour = 0, minute = 0, second = 0;
-                if (parts.length >= 2) {
-                  final timePart = parts[1];
-                  final timeParts = timePart.split(':');
-                  if (timeParts.length >= 3) {
-                    hour = int.parse(timeParts[0]);
-                    minute = int.parse(timeParts[1]);
-                    second = int.parse(timeParts[2]);
-                  }
-                }
-                
-                return DateTime(year, month, day, hour, minute, second);
-              }
-            }
-          } catch (e) {
-            print('⚠️ DD/MM/YYYY parsing failed: $e');
-          }
-        }
-        
-        // Try ISO format
-        try {
-          return DateTime.parse(dateTime);
-        } catch (e) {
-          print('⚠️ ISO parsing failed: $e');
-        }
-        
-        return null;
-      }
-      
-      // Handle MongoDB format
-      if (dateTime is Map && dateTime.containsKey('\$date')) {
-        try {
-          return DateTime.parse(dateTime['\$date']);
-        } catch (e) {
-          print('⚠️ MongoDB date parsing failed: $e');
-        }
-      }
-      
-      return null;
-    } catch (e) {
-      print('❌ Error parsing date: $dateTime, error: $e');
-      return null;
-    }
-  }
-
   String _formatDateTime(dynamic dateTime) {
     if (dateTime == null) return 'N/A';
     
@@ -1443,7 +1653,8 @@ class PDFReportService {
       DateTime? date = _parseDateTime(dateTime);
       
       if (date != null) {
-        return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+        // ✅ FIX: Ensure we're formatting the local time with IST indicator
+        return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')} IST';
       }
       
       return dateTime.toString();

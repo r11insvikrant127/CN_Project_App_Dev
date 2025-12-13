@@ -266,33 +266,6 @@ def log_security_event(event_type, user_role, device_id, ip_address, details=Non
     except Exception as e:
         print(f"❌ Error logging security event: {e}")
         
-        
-@app.route('/api/debug/time-check', methods=['GET'])
-def debug_time_check():
-    """Simple endpoint to check what time backend returns - FIXED VERSION"""
-    current_ist = datetime.now(INDIA_TZ)
-    
-    # Test what actually gets returned to frontend - WITHOUT raw datetime object
-    response_data = {
-        'message': 'Time check - what frontend receives',
-        'timestamp_iso': current_ist.isoformat(),
-        'timestamp_string': current_ist.strftime('%Y-%m-%d %H:%M:%S %Z'),
-        'time_only': current_ist.strftime('%H:%M:%S'),
-        'date_only': current_ist.strftime('%Y-%m-%d'),  # This should stay as string
-        'timezone_offset': current_ist.strftime('%z'),
-        'debug_note': 'Check if all timestamps show +05:30 (IST)',
-        # Remove raw_datetime_object to avoid Flask auto-conversion to GMT
-    }
-    
-    print(f"🕒 DEBUG BACKEND TIME - Backend processing time (IST): {current_ist}")
-    print(f"🕒 DEBUG RESPONSE CONTENT - What we're sending to frontend: {response_data}")
-    
-    return jsonify(response_data), 200
-        
-
-
-
-# Enhanced admin authentication with biometric flag
 # Enhanced admin authentication with biometric OR device verification
 @app.route('/api/admin/authenticate', methods=['POST'])
 @limiter.limit("5 per minute")
@@ -937,7 +910,6 @@ def get_student_with_role(roll_no, selected_role):
                 return str(obj)
             return obj
         
-        # ✅ ADD DEBUGGING HERE - RIGHT BEFORE RETURNING DATA
         print("🔍 MOVEMENT RECORDS DEBUG - Before sending to frontend:")
         in_out_records = student.get('in_out_records', [])
         print(f"📊 Total records to send: {len(in_out_records)}")
@@ -1010,38 +982,6 @@ def get_student_with_role(roll_no, selected_role):
     except Exception as e:
         print(f"❌ Error in get_student_with_role: {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
-
-@app.route('/api/debug/canteen-data', methods=['GET'])
-@jwt_required()
-def debug_canteen_data():
-    """Debug endpoint to check canteen data"""
-    try:
-        # Check total unauthorized visits
-        total_unauthorized = db.canteen_visits.count_documents({
-            'is_unauthorized': True
-        })
-        
-        # Check recent unauthorized visits
-        recent_unauthorized = db.canteen_visits.count_documents({
-            'is_unauthorized': True,
-            'timestamp': {'$gte': datetime(2024, 1, 1, tzinfo=INDIA_TZ)}
-        })
-        
-        # Sample data
-        sample_visits = list(db.canteen_visits.find(
-            {'is_unauthorized': True},
-            {'_id': 0}
-        ).limit(5))
-        
-        return jsonify({
-            'total_unauthorized': total_unauthorized,
-            'recent_unauthorized': recent_unauthorized,
-            'sample_visits': sample_visits,
-            'database_status': 'connected'
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/student/scan/security/<selected_role>', methods=['POST'])
 @jwt_required()
@@ -1184,7 +1124,6 @@ def handle_security_scan(selected_role):
             else:
                 now = datetime.now(INDIA_TZ)
             
-            # ✅ DEBUG: Print both timestamps before calculation
             print(f"🔍 DEBUG TIME CALCULATION - Security Scan:")
             print(f"   Roll No: {roll_no}")
             print(f"   Out time: {out_time} (tz: {out_time.tzinfo})")
@@ -2259,8 +2198,7 @@ def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
         date_str = visit['timestamp'].strftime('%Y-%m-%d')
         daily_visits[date_str] += 1
     
-    # ✅ ADD DEBUG LINES HERE - RIGHT AFTER GROUPING DATA
-    print(f"🔍 PREDICTION DEBUG - Historical data analysis:")
+    print(f"🔍 PREDICTION - Historical data analysis:")
     print(f"📊 Total visits analyzed: {len(visits)}")
     print(f"📅 Unique days with data: {len(daily_visits)}")
     print(f"📈 Daily visit counts:")
@@ -2270,7 +2208,6 @@ def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
     if daily_visits:
         visit_counts = list(daily_visits.values())
         print(f"📊 Data stats - Min: {min(visit_counts)}, Max: {max(visit_counts)}, Avg: {sum(visit_counts)/len(visit_counts):.1f}")
-    # ✅ END DEBUG LINES
     
     # Prepare data for prediction
     dates = sorted([datetime.strptime(day, '%Y-%m-%d') for day in daily_visits.keys()])
@@ -2421,38 +2358,6 @@ def _generate_ai_alerts(visits):
             seen_messages.add(alert['message'])
     
     return unique_alerts
-
-# REAL-TIME ALERT SYSTEM
-@app.route('/api/alerts/real-time', methods=['GET'])
-@jwt_required()
-def get_real_time_alerts():
-    try:
-        identity_string = get_jwt_identity()
-        if ':' in identity_string:
-            device_id, user_role = identity_string.split(':', 1)
-        
-        # Get timeframe from query params (default: last 2 hours)
-        hours = int(request.args.get('hours', 2))
-        cutoff_time = datetime.now(INDIA_TZ) - timedelta(hours=hours)
-        
-        # Get unauthorized visits in timeframe
-        visits = list(db.canteen_visits.find({
-            'timestamp': {'$gte': cutoff_time},
-            'is_unauthorized': True
-        }))
-        
-        alerts = _generate_real_time_alerts(visits, hours)
-        
-        return jsonify({
-            'alerts': alerts,
-            'timeframe_hours': hours,
-            'total_unauthorized_visits': len(visits),
-            'generated_at': datetime.now(INDIA_TZ).isoformat()
-        }), 200
-        
-    except Exception as e:
-        print(f"❌ Error in real-time alerts: {e}")
-        return jsonify({'alerts': []}), 200
 
 def _generate_real_time_alerts(visits, timeframe_hours):
     """Generate real-time alerts for supervisors"""
@@ -2896,7 +2801,6 @@ def sync_security_scans():
                 else:
                     now = datetime.now(INDIA_TZ)
                 
-                # ✅ DEBUG: Print both timestamps before calculation
                 print(f"🔍 DEBUG TIME CALCULATION - Sync:")
                 print(f"   Roll No: {roll_no}")
                 print(f"   Out time: {out_time} (tz: {out_time.tzinfo})")
@@ -3153,81 +3057,7 @@ def sync_canteen_visits():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-    
-@app.route('/api/debug/check-encoder', methods=['GET'])
-def debug_encoder():
-    """Check what CustomJSONEncoder is producing vs middleware"""
-    test_data = {
-        'datetime_utc': datetime(2025, 11, 30, 14, 37, 33, tzinfo=timezone.utc),
-        'datetime_naive': datetime(2025, 11, 30, 14, 37, 33),
-        'string_date': '2025-11-30T14:37:33Z',
-        'normal_string': 'Hello World',
-        'number': 123,
-        'list_with_dates': [
-            datetime(2025, 11, 30, 14, 37, 33, tzinfo=timezone.utc),
-            'normal string'
-        ]
-    }
-    
-    # Test CustomJSONEncoder directly
-    encoder = CustomJSONEncoder()
-    encoded_data = encoder.encode(test_data)
-    
-    return jsonify({
-        'custom_encoder_output': json.loads(encoded_data),
-        'encoder_working': True,
-        'timestamp': datetime.now(INDIA_TZ).isoformat()
-    })
-    
-@app.route('/api/debug/pdf-data-check', methods=['POST'])
-@jwt_required()
-def debug_pdf_data_check():
-    """Debug endpoint to check what data is being sent to PDF generator"""
-    try:
-        data = request.get_json()
         
-        print("🔍 PDF DATA DEBUG - BACKEND SENDING:")
-        print(f"📊 Total records received for PDF: {len(data.get('movementRecords', []))}")
-        
-        if data.get('movementRecords'):
-            print("📄 First 3 records being sent:")
-            for i, record in enumerate(data.get('movementRecords')[:3]):
-                print(f"  Record {i}:")
-                print(f"    Action: {record.get('action')}")
-                print(f"    Out Time: {record.get('out_time')} (type: {type(record.get('out_time'))})")
-                print(f"    In Time: {record.get('in_time')} (type: {type(record.get('in_time'))})")
-                print(f"    Time Spent: {record.get('time_spent_minutes')}")
-        
-        # Check datetime serialization
-        test_records = []
-        for record in data.get('movementRecords', [])[:2]:
-            test_record = {
-                'action': record.get('action'),
-                'out_time_raw': record.get('out_time'),
-                'out_time_type': str(type(record.get('out_time'))),
-                'in_time_raw': record.get('in_time'),
-                'in_time_type': str(type(record.get('in_time'))),
-            }
-            test_records.append(test_record)
-        
-        return jsonify({
-            'debug_info': {
-                'total_records': len(data.get('movementRecords', [])),
-                'sample_records': test_records,
-                'backend_time': datetime.now(INDIA_TZ).isoformat(),
-                'student_info': {
-                    'name': data.get('studentName'),
-                    'roll_no': data.get('rollNo'),
-                    'hostel': data.get('hostel')
-                }
-            }
-        }), 200
-        
-    except Exception as e:
-        print(f"❌ PDF Data Debug Error: {e}")
-        return jsonify({'error': str(e)}), 500
-    
-
 @app.route('/api/sync/students', methods=['GET'])
 @jwt_required()
 def sync_students():
@@ -3329,8 +3159,7 @@ def validate_offline_scan():
             'error': str(e)
         }), 500
         
-        
-# Add this endpoint to your backend.py file
+
 @app.route('/api/feedback/submit', methods=['POST'])
 @jwt_required()
 def submit_feedback():
@@ -3693,36 +3522,6 @@ def check_student_data_availability(hostel):
             'count': 0,
             'error': str(e)
         }), 200    
-
-@app.route('/api/debug/check-hostel-data/<hostel>', methods=['GET'])
-def debug_check_hostel_data(hostel):
-    """Debug endpoint to check what students are in the backend for a hostel"""
-    try:
-        # Get all students for the hostel
-        students = list(db.students.find(
-            {'hostel': hostel},
-            {'_id': 0, 'roll_no': 1, 'name': 1, 'hostel': 1}
-        ).sort('roll_no', 1))
-        
-        # Group by department
-        departments = defaultdict(list)
-        for student in students:
-            roll_no = student.get('roll_no', '')
-            # Extract department code (first 2 letters after year)
-            if len(roll_no) >= 7:
-                dept = roll_no[4:6]  # e.g., 'CS', 'ME', 'EE'
-                departments[dept].append(student)
-        
-        return jsonify({
-            'hostel': hostel,
-            'total_students': len(students),
-            'students_by_department': dict(departments),
-            'all_students': students,
-            'debug_note': f'Hostel {hostel} has students from departments: {list(departments.keys())}'
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
     
     
 @app.route('/api/students/all-minimal', methods=['GET'])
@@ -3828,8 +3627,6 @@ if __name__ == "__main__":
     print("🚀 Starting Student Management System API Server...")
     print("📊 Version 2.0 - With Enhanced Analytics and Reporting")
     print("🔗 Available at: http://0.0.0.0:5000")
-    
-    # ADD DEBUG LINE HERE
     print(f"🕒 DEBUG STARTUP - Server starting at UTC: {datetime.now(timezone.utc)}, IST: {datetime.now(INDIA_TZ)}")
     
     print("🧹 Initializing data cleanup for records older than 6 months...")

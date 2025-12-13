@@ -6,6 +6,7 @@ import 'device_verification_screen.dart';
 import 'biometric_auth_service.dart';
 import 'theme_provider.dart';
 import 'app_themes.dart';
+import 'sync_service.dart'; // ⭐ ADD THIS IMPORT
 
 // Notifications
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -57,7 +58,28 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // ⭐ CORRECT: Stop sync when ENTIRE APP closes
+    final syncService = SyncService();
+    syncService.stopPeriodicSync();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    
+    // ⭐ HANDLE APP BACKGROUND/FOREGROUND
+    final syncService = SyncService();
+    
+    if (state == AppLifecycleState.paused || 
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.detached) {
+      // App going to background or closing
+      syncService.stopPeriodicSync();
+      print('🔍 DEBUG: App backgrounded - sync stopped');
+    }
+    // Note: Sync will automatically restart when app comes to foreground
+    // because the timer continues running
   }
 
   // Global navigator key

@@ -26,10 +26,10 @@ import 'allowed_time_management_screen.dart';
 import 'profile_photo_service.dart';
 import 'profile_photo_dialog.dart';
 import '../main.dart'; // to access notificationPlugin
+import 'package:intl/intl.dart';
 
 
-const String kBaseUrl = "http://192.168.29.119:5000";
-//const String kBaseUrl = "http://10.20.55.59:5000";
+const String kBaseUrl = "https://cn-project-app-dev.onrender.com";
 
 class StudentLookupScreen extends StatefulWidget {
   final String selectedRole;
@@ -141,26 +141,27 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     showVoiceHelp();
   }
 
+
   void _manualSync() async {
-  final success = await _syncService.syncWithFeedback();
-  
-  if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(success ? 
-          '✅ All records synced successfully!' : 
-          '❌ Sync failed. Some records may still be pending.'),
-        backgroundColor: success ? Colors.green : Colors.orange,
-        duration: Duration(seconds: 3),
-      ),
-    );
+    final syncService = SyncService();
+    final success = await syncService.enhancedSync();
     
-    // Only refresh student data if we're currently viewing a student
-    if (_studentData != null && _rollNoController.text.isNotEmpty) {
-      _getStudentData();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success ? 
+            '✅ All records synced successfully!' : 
+            '⚠️ Sync completed with some pending records'),
+          backgroundColor: success ? Colors.green : Colors.orange,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      
+      // Refresh student data if viewing a student
+      if (_studentData != null && _rollNoController.text.isNotEmpty) {
+        _getStudentData();
+      }
     }
-    // Don't refresh if no student is being viewed
-  }
   }
 
   Future<void> _generateMovementLogsPDF() async {
@@ -2213,7 +2214,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                 ),
                 SizedBox(height: 4),
                 Text(
-                  'Out: ${_formatDateTime(record['out_time'])}',
+                  'Out: ${_formatDateTimeForDisplay(record['out_time'])}', // ← CHANGED
                   style: TextStyle(
                     fontSize: 14, 
                     color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)
@@ -2221,7 +2222,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                 ),
                 if (record['in_time'] != null)
                   Text(
-                    'In: ${_formatDateTime(record['in_time'])}',
+                    'In: ${_formatDateTimeForDisplay(record['in_time'])}', // ← CHANGED
                     style: TextStyle(
                       fontSize: 14, 
                       color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)
@@ -2299,12 +2300,13 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                   ],
                 ),
                 SizedBox(height: 4),
+                // ✅ NEW CODE - REPLACE WITH THIS:
                 Row(
                   children: [
                     Icon(Icons.access_time, size: 16, color: isDark ? Colors.red[300]! : Colors.red[600]),
                     SizedBox(width: 4),
                     Text(
-                      record['time']?.toString() ?? 'Unknown Time',
+                      _formatTime(record['time'] ?? record['date']) ?? 'Unknown Time', // ✅ FIXED
                       style: TextStyle(
                         color: isDark ? Colors.red[300]! : Colors.red[700], 
                         fontSize: 12
@@ -2526,25 +2528,28 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     if (dateTime == null) return 'N/A';
 
     try {
+      DateTime? parsedDate;
+      
       // Handle MongoDB date format: {"$date": "2024-01-15T00:00:00Z"}
       if (dateTime is Map<String, dynamic> && dateTime.containsKey('\$date')) {
         String dateString = dateTime['\$date'];
-        DateTime date = DateTime.parse(dateString);
-        return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+        parsedDate = DateTime.parse(dateString).toLocal(); // ✅ FIX: Convert to local time
       }
-
       // Handle string dates
-      if (dateTime is String) {
+      else if (dateTime is String) {
         if (dateTime.contains('T')) {
-          DateTime date = DateTime.parse(dateTime);
-          return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+          parsedDate = DateTime.parse(dateTime).toLocal(); // ✅ FIX: Convert to local time
+        } else {
+          return dateTime; // Return as-is if it's already formatted
         }
-        return dateTime; // Return as-is if it's already formatted
+      }
+      // Handle DateTime objects
+      else if (dateTime is DateTime) {
+        parsedDate = dateTime.toLocal(); // ✅ FIX: Convert to local time
       }
 
-      // Handle DateTime objects
-      if (dateTime is DateTime) {
-        return '${dateTime.day.toString().padLeft(2, '0')}/${dateTime.month.toString().padLeft(2, '0')}/${dateTime.year} ${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
+      if (parsedDate != null) {
+        return '${parsedDate.day.toString().padLeft(2, '0')}/${parsedDate.month.toString().padLeft(2, '0')}/${parsedDate.year} ${parsedDate.hour.toString().padLeft(2, '0')}:${parsedDate.minute.toString().padLeft(2, '0')} IST'; // ✅ FIX: Add IST indicator
       }
 
       return dateTime.toString();
@@ -2555,62 +2560,122 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
 
   // ADD THE NEW METHOD RIGHT AFTER THE EXISTING _formatDateTime METHOD:
   String _formatDateTimeForDisplay(dynamic dateTime) {
-  if (dateTime == null) return 'N/A';
+    if (dateTime == null) return 'N/A';
 
-  try {
-    // Handle string dates like "2025-10-11T10:53:39.228533"
-    if (dateTime is String) {
-      DateTime date = DateTime.parse(dateTime);
-      return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+    try {
+      DateTime? parsedDate;
+      
+      // Handle GMT string format like "Sat, 29 Nov 2025 10:33:36 GMT"
+      if (dateTime is String && dateTime.contains('GMT')) {
+        // Use DateFormat to parse GMT format correctly
+        final formatter = DateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", 'en_US');
+        parsedDate = formatter.parseUtc(dateTime).toLocal();
+      }
+      // Handle regular string dates like "2025-11-29T10:33:36.228533"
+      else if (dateTime is String) {
+        parsedDate = DateTime.parse(dateTime).toLocal();
+      }
+      // Handle MongoDB date format
+      else if (dateTime is Map<String, dynamic> && dateTime.containsKey('\$date')) {
+        String dateString = dateTime['\$date'];
+        parsedDate = DateTime.parse(dateString).toLocal();
+      }
+      // Handle DateTime objects
+      else if (dateTime is DateTime) {
+        parsedDate = dateTime.toLocal();
+      }
+
+      if (parsedDate != null) {
+        return '${parsedDate.day.toString().padLeft(2, '0')}/${parsedDate.month.toString().padLeft(2, '0')}/${parsedDate.year} ${parsedDate.hour.toString().padLeft(2, '0')}:${parsedDate.minute.toString().padLeft(2, '0')}';
+      }
+
+      return dateTime.toString();
+    } catch (e) {
+      // If parsing fails, return original with note
+      return '${dateTime.toString()} (Format Error)';
     }
-
-    // Handle MongoDB date format
-    if (dateTime is Map<String, dynamic> && dateTime.containsKey('\$date')) {
-      String dateString = dateTime['\$date'];
-      DateTime date = DateTime.parse(dateString);
-      return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
-    }
-
-    // Handle DateTime objects
-    if (dateTime is DateTime) {
-      return '${dateTime.day.toString().padLeft(2, '0')}/${dateTime.month.toString().padLeft(2, '0')}/${dateTime.year} ${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
-    }
-
-    return dateTime.toString();
-  } catch (e) {
-    return 'Invalid Date';
   }
-  }
 
+
+  // ✅ NEW VERSION - PASTE THIS
   String _formatDate(dynamic dateValue) {
     if (dateValue == null) return 'N/A';
 
     try {
-      // Handle MongoDB date format: {"$date": "2024-01-15T00:00:00Z"}
-      if (dateValue is Map<String, dynamic> && dateValue.containsKey('\$date')) {
-        String dateString = dateValue['\$date'];
-        DateTime date = DateTime.parse(dateString);
-        return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
-      }
-
-      // Handle string dates
-      if (dateValue is String) {
-        if (dateValue.contains('T')) {
-          DateTime date = DateTime.parse(dateValue);
-          return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+      DateTime? parsedDate;
+      
+      // ✅ FIXED: Handle GMT string format like "Sun, 30 Nov 2025 04:37:37 GMT"
+      if (dateValue is String && dateValue.contains('GMT')) {
+        try {
+          // Parse GMT string and convert to local time (IST)
+          final formatter = DateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", 'en_US');
+          parsedDate = formatter.parseUtc(dateValue).toLocal(); // Convert GMT to local time
+        } catch (e) {
+          print('❌ Error parsing GMT date: $dateValue, error: $e');
         }
-        // If it's already just a date string, return as-is
-        return dateValue.length > 10 ? dateValue.substring(0, 10) : dateValue;
+      }
+      // Handle MongoDB date format: {"$date": "2024-01-15T00:00:00Z"}
+      else if (dateValue is Map<String, dynamic> && dateValue.containsKey('\$date')) {
+        String dateString = dateValue['\$date'];
+        parsedDate = DateTime.parse(dateString).toLocal();
+      }
+      // Handle ISO string dates
+      else if (dateValue is String && dateValue.contains('T')) {
+        parsedDate = DateTime.parse(dateValue).toLocal();
+      }
+      // Handle DateTime objects
+      else if (dateValue is DateTime) {
+        parsedDate = dateValue.toLocal();
+      }
+      // Handle already formatted date strings
+      else if (dateValue is String) {
+        return dateValue; // Return as-is if it's already a formatted date
       }
 
-      // Handle DateTime objects
-      if (dateValue is DateTime) {
-        return '${dateValue.day.toString().padLeft(2, '0')}/${dateValue.month.toString().padLeft(2, '0')}/${dateValue.year}';
+      if (parsedDate != null) {
+        // ✅ Format as "30/11/2025 10:07" (IST time) instead of GMT
+        return '${parsedDate.day.toString().padLeft(2, '0')}/${parsedDate.month.toString().padLeft(2, '0')}/${parsedDate.year} ${parsedDate.hour.toString().padLeft(2, '0')}:${parsedDate.minute.toString().padLeft(2, '0')}';
       }
 
       return dateValue.toString();
     } catch (e) {
+      print('❌ Date formatting error for: $dateValue, error: $e');
       return dateValue.toString();
+    }
+  }
+
+  // ✅ ADD THIS NEW FUNCTION RIGHT AFTER _formatDate
+  String _formatTime(dynamic timeValue) {
+    if (timeValue == null) return 'N/A';
+
+    try {
+      DateTime? parsedDate;
+      
+      // Handle GMT strings
+      if (timeValue is String && timeValue.contains('GMT')) {
+        final formatter = DateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", 'en_US');
+        parsedDate = formatter.parseUtc(timeValue).toLocal();
+      }
+      // Handle full datetime strings
+      else if (timeValue is String && timeValue.contains('T')) {
+        parsedDate = DateTime.parse(timeValue).toLocal();
+      }
+      // Handle time-only strings like "10:07"
+      else if (timeValue is String && timeValue.contains(':')) {
+        return timeValue; // Return as-is if it's already time-only
+      }
+      // Handle DateTime objects
+      else if (timeValue is DateTime) {
+        parsedDate = timeValue.toLocal();
+      }
+
+      if (parsedDate != null) {
+        return '${parsedDate.hour.toString().padLeft(2, '0')}:${parsedDate.minute.toString().padLeft(2, '0')}';
+      }
+
+      return timeValue.toString();
+    } catch (e) {
+      return timeValue.toString();
     }
   }
 
@@ -2638,6 +2703,10 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
   }
 
   Future<void> _logout() async {
+    // ⭐ ADD: Stop periodic sync
+    final syncService = SyncService();
+    syncService.stopPeriodicSync();
+    
     SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.remove('access_token');
     await prefs.remove('current_role');

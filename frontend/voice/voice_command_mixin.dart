@@ -28,7 +28,7 @@ mixin VoiceCommandMixin<T extends StatefulWidget> on State<T> {
   void _initializeVoiceCommands() {
     final commands = getVoiceCommands();
     
-    // ADD BASE THEME COMMANDS TO ALL SCREENS
+    // BASE THEME COMMANDS TO ALL SCREENS
     final baseCommands = <String, VoidCallback>{
       'dark': () => switchToDarkTheme(),
       'dark theme': () => switchToDarkTheme(),
@@ -149,6 +149,7 @@ mixin VoiceCommandMixin<T extends StatefulWidget> on State<T> {
     if (type.contains('RoleSelection')) return 'Role Selection';
     if (type.contains('SubroleAuthentication')) return 'Authentication';
     if (type.contains('StudentLookup')) return 'Student Lookup';
+    if (type.contains('FeedbackScreen')) return 'Feedback';
     return 'Current Screen';
   }
 

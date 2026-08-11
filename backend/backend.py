@@ -337,12 +337,6 @@ def create_active_checkout(
 
 
 def monitor_active_checkouts():
-    """
-    Proactively detect students who have exceeded their
-    allowed time outside.
-
-    This function does NOT wait for the student to scan IN.
-    """
     print(
         f"🔄 ACTIVE CHECKOUT MONITOR RUNNING | "
         f"{datetime.now(INDIA_TZ)}"
@@ -355,17 +349,45 @@ def monitor_active_checkouts():
 
         now = datetime.now(INDIA_TZ)
 
-        # MongoDB stores datetimes in UTC and may return them
-        # without timezone information. Use a UTC-naive value
-        # for MongoDB comparison.
+        # MongoDB stores BSON datetimes as UTC without tzinfo.
         now_utc = now.astimezone(timezone.utc).replace(tzinfo=None)
 
-        # Find active students whose deadline has passed
-        expired_checkouts = db.active_checkouts.find({
-            'status': 'active',
-            'deadline': {'$lte': now_utc},
-            'alert_sent': False
+        print(
+            f"🕒 MONITOR TIME | "
+            f"IST={now} | UTC={now_utc}"
+        )
+
+        active_checkouts = list(
+        db.active_checkouts.find({
+            'status': 'active'
         })
+    )
+
+    print(
+        f"📊 TOTAL ACTIVE CHECKOUTS: "
+        f"{len(active_checkouts)}"
+    )
+
+    for active in active_checkouts:
+        print(
+            f"   👤 {active.get('roll_no')} | "
+            f"deadline={active.get('deadline')} | "
+            f"status={active.get('status')} | "
+            f"alert_sent={active.get('alert_sent')}"
+        )
+
+        expired_checkouts = list(
+            db.active_checkouts.find({
+                'status': 'active',
+                'deadline': {'$lte': now_utc},
+                'alert_sent': False
+            })
+        )
+
+        print(
+            f"🔍 EXPIRED ACTIVE CHECKOUTS FOUND: "
+            f"{len(expired_checkouts)}"
+        )
 
         for checkout in expired_checkouts:
 

@@ -1089,19 +1089,6 @@ scheduler.add_job(
     id='monthly_data_cleanup'
 )
 
-# Proactive allowed-time monitoring
-# Runs once every 60 seconds.
-scheduler.add_job(
-    func=monitor_active_checkouts,
-    trigger='interval',
-    seconds=10,
-    id='active_checkout_monitor',
-    replace_existing=True
-)
-print(
-    "✅ Proactive monitoring scheduler registered "
-    "to run every 10 seconds"
-)
 
 # Also run cleanup when the app starts for any stale records
 cleanup_old_movement_records()

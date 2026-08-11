@@ -39,6 +39,7 @@ class CustomJSONEncoder(json.JSONEncoder):
 app = Flask(__name__)
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)
+MONITORING_SECRET = os.environ.get("MONITORING_SECRET")
 app.json_encoder = CustomJSONEncoder
 
 
@@ -623,7 +624,47 @@ def monitor_active_checkouts():
             f"❌ ERROR IN ACTIVE CHECKOUT MONITORING | "
             f"{type(e).__name__}: {e}"
         )
+@app.route('/api/internal/monitor-active-checkouts', methods=['POST'])
+def trigger_active_checkout_monitor():
 
+    provided_secret = request.headers.get("X-Monitoring-Secret")
+
+    if not MONITORING_SECRET:
+        print("❌ MONITORING_SECRET is not configured")
+
+        return jsonify({
+            "success": False,
+            "message": "Monitoring service not configured"
+        }), 500
+
+    if provided_secret != MONITORING_SECRET:
+        print("🚫 Unauthorized monitoring request")
+
+        return jsonify({
+            "success": False,
+            "message": "Unauthorized"
+        }), 401
+
+    try:
+        monitor_active_checkouts()
+
+        return jsonify({
+            "success": True,
+            "message": "Active checkout monitoring completed"
+        }), 200
+
+    except Exception as e:
+        print(
+            f"❌ Monitoring endpoint error: "
+            f"{type(e).__name__}: {e}"
+        )
+
+        return jsonify({
+            "success": False,
+            "message": "Monitoring failed"
+        }), 500
+
+        
 # Enhanced security logging
 def log_security_event(event_type, user_role, device_id, ip_address, details=None):
     """Log security events for audit trail"""

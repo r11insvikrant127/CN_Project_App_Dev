@@ -664,7 +664,7 @@ def trigger_active_checkout_monitor():
             "message": "Monitoring failed"
         }), 500
 
-        
+
 # Enhanced security logging
 def log_security_event(event_type, user_role, device_id, ip_address, details=None):
     """Log security events for audit trail"""
@@ -1504,79 +1504,154 @@ def handle_security_scan(selected_role):
                 'offline_sync': is_offline_sync
             }), 200
             
-        elif action == 'in':
-            # Find the latest out record without in time
+                elif action == 'in':
+            # Find the latest active OUT record AND remember its exact index.
+            # Using the index prevents MongoDB from accidentally updating
+            # another record having the same/similar out_time.
+            records = student.get('in_out_records', [])
+
             latest_out_record = None
-            for record in reversed(student.get('in_out_records', [])):
-                if record.get('action') == 'out' and record.get('in_time') is None:
+            latest_out_index = None
+
+            for i in range(len(records) - 1, -1, -1):
+                record = records[i]
+
+                if (
+                    record.get('action') == 'out'
+                    and record.get('in_time') is None
+                ):
                     latest_out_record = record
+                    latest_out_index = i
                     break
-            
-            if not latest_out_record:
-                return jsonify({'message': 'No active check out record found'}), 400
-            
-            # ✅ FIXED TIMEZONE HANDLING
-            raw_out_time = latest_out_record['out_time']  # Keep original for MongoDB query
-            
-            # Handle different datetime formats and timezones
-            if isinstance(raw_out_time, str):
-                try:
-                    # Convert string to datetime object
-                    out_time = datetime.fromisoformat(raw_out_time.replace('Z', '+00:00'))
-                    print(f"🕒 Converted string out_time to datetime: {out_time}")
-                except Exception as e:
-                    print(f"❌ Error converting string out_time: {e}")
-                    return jsonify({'message': 'Invalid timestamp format in database'}), 500
-            else:
-                out_time = raw_out_time
-            
-            # ✅ CRITICAL FIX: Normalize timezone to IST for comparison
-            if out_time.tzinfo is None:
-                # If no timezone, assume it's UTC and convert to IST
-                out_time = out_time.replace(tzinfo=timezone.utc).astimezone(INDIA_TZ)
-                print(f"🕒 Converted naive out_time to IST: {out_time}")
-            elif out_time.tzinfo.utcoffset(out_time).total_seconds() == 0:
-                # If it's UTC, convert to IST
+
+            if latest_out_record is None:
+                return jsonify({
+                    'message': 'No active check out record found'
+                }), 400
+
+            # ---------------------------------------------------------
+            # NORMALIZE OUT TIME
+            # ---------------------------------------------------------
+
+            raw_out_time = latest_out_record.get('out_time')
+
+            if raw_out_time is None:
+                return jsonify({
+                    'message': 'Invalid OUT record: out_time is missing'
+                }), 500
+
+            try:
+                if isinstance(raw_out_time, str):
+                    out_time = datetime.fromisoformat(
+                        raw_out_time.replace('Z', '+00:00')
+                    )
+                else:
+                    out_time = raw_out_time
+
+                # MongoDB normally returns naive UTC datetimes.
+                if out_time.tzinfo is None:
+                    out_time = out_time.replace(
+                        tzinfo=timezone.utc
+                    )
+
+                # Convert to IST for display/calculation.
                 out_time = out_time.astimezone(INDIA_TZ)
-                print(f"🕒 Converted UTC out_time to IST: {out_time}")
-            else:
-                # Already in some timezone, ensure it's IST
-                out_time = out_time.astimezone(INDIA_TZ)
-                print(f"🕒 Normalized out_time to IST: {out_time}")
-            
-            # ✅ Ensure now is also in IST (should already be)
-            # ✅ FIXED:
+
+            except Exception as e:
+                print(f"❌ Error normalizing OUT time: {e}")
+
+                return jsonify({
+                    'message': 'Invalid OUT timestamp'
+                }), 500
+
+            # ---------------------------------------------------------
+            # GET IN TIME
+            # ---------------------------------------------------------
+
             if is_offline_sync and original_timestamp:
-                # Convert UTC timestamp to IST properly
-                utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
+                utc_time = datetime.fromtimestamp(
+                    original_timestamp / 1000,
+                    tz=timezone.utc
+                )
                 now = utc_time.astimezone(INDIA_TZ)
             else:
                 now = datetime.now(INDIA_TZ)
-            
-            print(f"🔍 DEBUG TIME CALCULATION - Security Scan:")
-            print(f"   Roll No: {roll_no}")
-            print(f"   Out time: {out_time} (tz: {out_time.tzinfo})")
-            print(f"   In time:  {now} (tz: {now.tzinfo})")
-            
-            # ✅ NOW both datetimes are properly in IST, safe to subtract
-            time_spent = (now - out_time).total_seconds() / 60  # in minutes
-            
-            print(f"🔍 Calculated time spent: {time_spent} minutes")
-            
-            # ✅ Use raw_out_time (original) for MongoDB query to ensure match
-            db.students.update_one(
-                {'roll_no': roll_no, 'in_out_records.out_time': raw_out_time},
-                {'$set': {
-                    'in_out_records.$.in_time': now,
-                    'in_out_records.$.time_spent_minutes': time_spent,
-                    'in_out_records.$.action': 'in',
-                    'in_out_records.$.status': 'inside',
-                    'in_out_records.$.offline_sync': is_offline_sync
-                }}
+
+            print("🔍 DEBUG TIME CALCULATION")
+            print(f"   Roll No : {roll_no}")
+            print(f"   OUT     : {out_time}")
+            print(f"   IN      : {now}")
+            print(f"   OUT index: {latest_out_index}")
+
+            # ---------------------------------------------------------
+            # CRITICAL SAFETY CHECK
+            # ---------------------------------------------------------
+
+            time_spent = (
+                now - out_time
+            ).total_seconds() / 60
+
+            print(
+                f"🔍 Calculated time spent: "
+                f"{time_spent:.4f} minutes"
             )
 
-            # Student has returned.
-            # Remove the active checkout from proactive monitoring.
+            # NEVER store a negative duration.
+            if time_spent < 0:
+
+                print(
+                    "❌ INVALID MOVEMENT ORDER | "
+                    f"Roll={roll_no} | "
+                    f"OUT={out_time} | "
+                    f"IN={now} | "
+                    f"Difference={time_spent:.4f} min"
+                )
+
+                return jsonify({
+                    'success': False,
+                    'message': (
+                        'Invalid scan time: '
+                        'IN time is earlier than OUT time.'
+                    ),
+                    'out_time': out_time.isoformat(),
+                    'in_time': now.isoformat(),
+                    'time_spent_minutes': round(time_spent, 2),
+                    'offline_sync': is_offline_sync
+                }), 400
+
+            # ---------------------------------------------------------
+            # UPDATE THE EXACT RECORD WE FOUND
+            # ---------------------------------------------------------
+
+            update_result = db.students.update_one(
+                {'roll_no': roll_no},
+                {
+                    '$set': {
+                        f'in_out_records.{latest_out_index}.in_time': now,
+                        f'in_out_records.{latest_out_index}.time_spent_minutes': round(
+                            time_spent, 4
+                        ),
+                        f'in_out_records.{latest_out_index}.action': 'in',
+                        f'in_out_records.{latest_out_index}.status': 'inside',
+                        f'in_out_records.{latest_out_index}.offline_sync': is_offline_sync
+                    }
+                }
+            )
+
+            if update_result.modified_count != 1:
+                print(
+                    f"❌ Failed to update movement record "
+                    f"for {roll_no}"
+                )
+
+                return jsonify({
+                    'message': 'Failed to update check-in record'
+                }), 500
+
+            # ---------------------------------------------------------
+            # REMOVE FROM ACTIVE CHECKOUT MONITORING
+            # ---------------------------------------------------------
+
             db.active_checkouts.delete_one({
                 'roll_no': roll_no
             })
@@ -1584,48 +1659,101 @@ def handle_security_scan(selected_role):
             print(
                 f"✅ Active checkout removed after IN: {roll_no}"
             )
-            
-            # Get student's custom allowed time or use default
-            max_allowed_time = student.get('custom_allowed_time_minutes', 480)
+
+            # ---------------------------------------------------------
+            # ALLOWED TIME CHECK
+            # ---------------------------------------------------------
+
+            max_allowed_time = float(
+                student.get(
+                    'custom_allowed_time_minutes',
+                    480
+                )
+            )
+
             response_data = {
+                'success': True,
                 'message': 'Check in recorded successfully',
-                'student_name': student.get('name', 'Unknown'),
+                'student_name': student.get(
+                    'name',
+                    'Unknown'
+                ),
                 'roll_no': roll_no,
                 'time': now.isoformat(),
                 'action': 'in',
-                'time_spent_minutes': round(time_spent, 2),
+                'time_spent_minutes': round(
+                    time_spent,
+                    2
+                ),
                 'offline_sync': is_offline_sync
             }
-            
-            # Check if time exceeded limit
+
+            # ---------------------------------------------------------
+            # DISCIPLINARY RECORD
+            # ---------------------------------------------------------
+
             if time_spent > max_allowed_time:
+
+                exceeded_minutes = round(
+                    time_spent - max_allowed_time,
+                    2
+                )
+
                 disciplinary_record = {
                     'date': now,
                     'time': now.strftime('%H:%M'),
-                    'description': f'Exceeded allowed time outside by {round(time_spent - max_allowed_time, 2)} minutes. '
-                                f'Out at: {out_time.strftime("%Y-%m-%d %H:%M")}, '
-                                f'In at: {now.strftime("%Y-%m-%d %H:%M")}, '
-                                f'Allowed: {max_allowed_time} minutes',
-                    'action_taken': f'Warning issued for exceeding {max_allowed_time}-minute limit',
+                    'description': (
+                        f'Exceeded allowed time outside by '
+                        f'{exceeded_minutes} minutes. '
+                        f'Out at: '
+                        f'{out_time.strftime("%Y-%m-%d %H:%M")}, '
+                        f'In at: '
+                        f'{now.strftime("%Y-%m-%d %H:%M")}, '
+                        f'Allowed: {max_allowed_time} minutes'
+                    ),
+                    'action_taken': (
+                        f'Warning issued for exceeding '
+                        f'{max_allowed_time}-minute limit'
+                    ),
                     'recorded_by': user_role,
                     'recorded_at': now,
-                    'time_exceeded_minutes': round(time_spent - max_allowed_time, 2),
+                    'time_exceeded_minutes': exceeded_minutes,
                     'auto_generated': True,
                     'offline_sync': is_offline_sync,
                     'allowed_time_limit': max_allowed_time
                 }
-                
+
                 db.students.update_one(
                     {'roll_no': roll_no},
-                    {'$push': {'disciplinary_records': disciplinary_record}}
+                    {
+                        '$push': {
+                            'disciplinary_records':
+                                disciplinary_record
+                        }
+                    }
                 )
-                
-                response_data['message'] = 'Check in recorded. Time exceeded 8-hour limit!'
-                response_data['disciplinary_action'] = 'Warning issued'
-                response_data['time_exceeded_minutes'] = round(time_spent - max_allowed_time, 2)
-            
-            print(f"✅ Offline check-in recorded: {roll_no} at {now}, time spent: {time_spent} minutes")
-            
+
+                response_data['message'] = (
+                    'Check in recorded. '
+                    'Time exceeded allowed limit!'
+                )
+
+                response_data['disciplinary_action'] = (
+                    'Warning issued'
+                )
+
+                response_data['time_exceeded_minutes'] = (
+                    exceeded_minutes
+                )
+
+            print(
+                f"✅ CHECK-IN RECORDED | "
+                f"Roll={roll_no} | "
+                f"OUT={out_time} | "
+                f"IN={now} | "
+                f"Duration={time_spent:.4f} min"
+            )
+
             return jsonify(response_data), 200
         
         return jsonify({'message': 'Invalid action'}), 400

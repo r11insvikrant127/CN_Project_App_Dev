@@ -355,10 +355,15 @@ def monitor_active_checkouts():
 
         now = datetime.now(INDIA_TZ)
 
+        # MongoDB stores datetimes in UTC and may return them
+        # without timezone information. Use a UTC-naive value
+        # for MongoDB comparison.
+        now_utc = now.astimezone(timezone.utc).replace(tzinfo=None)
+
         # Find active students whose deadline has passed
         expired_checkouts = db.active_checkouts.find({
             'status': 'active',
-            'deadline': {'$lte': now},
+            'deadline': {'$lte': now_utc},
             'alert_sent': False
         })
 
@@ -394,6 +399,12 @@ def monitor_active_checkouts():
             )
 
             out_time = checkout.get('out_time')
+
+            # MongoDB may return datetime values without timezone
+            # information. Convert them to IST before performing
+            # datetime arithmetic.
+            if out_time is not None and out_time.tzinfo is None:
+                out_time = out_time.replace(tzinfo=INDIA_TZ)
 
             exceeded_minutes = (
                 (now - out_time).total_seconds() / 60
@@ -2068,8 +2079,6 @@ def get_unauthorized_visits_analytics():
     except Exception as e:
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
-import numpy as np
-from datetime import datetime, timedelta
 
 def _predict_unauthorized_visits(daily_analysis):
     """Predict next week's unauthorized visits using manual linear regression"""

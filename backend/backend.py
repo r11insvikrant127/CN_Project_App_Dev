@@ -220,8 +220,14 @@ def initialize_database():
         # Create collections if they don't exist
         collections = db.list_collection_names()
         
-        required_collections = ['weekly_reports', 'canteen_visits', 'realtime_alerts', 'admin_scans', 'security_logs']
-        
+        required_collections = [
+            'weekly_reports',
+            'canteen_visits',
+            'realtime_alerts',
+            'admin_scans',
+            'security_logs',
+            'active_checkouts'
+        ]
         for collection in required_collections:
             if collection not in collections:
                 db.create_collection(collection)
@@ -234,6 +240,19 @@ def initialize_database():
         db.students.create_index([('roll_no', 1)], unique=True)
         db.devices.create_index([('device_id', 1)], unique=True)
         db.security_logs.create_index([('timestamp', -1)])
+        # Indexes for proactive allowed-time monitoring
+        db.active_checkouts.create_index(
+            [('roll_no', 1)],
+            unique=True
+        )
+
+        db.active_checkouts.create_index(
+            [('status', 1), ('deadline', 1)]
+        )
+
+        db.active_checkouts.create_index(
+            [('deadline', 1)]
+        )
         
         print("✅ Database initialization completed")
     except Exception as e:
@@ -245,6 +264,228 @@ if db_connected:
 else:
     print("⚠️ Skipping database initialization - no connection")
 
+def create_active_checkout(
+    roll_no,
+    student,
+    out_time,
+    user_role,
+    offline_sync=False
+):
+    """
+    Create/update an active checkout record for proactive
+    allowed-time monitoring.
+
+    This does NOT replace students.in_out_records.
+    It only stores currently active OUT sessions.
+    """
+    try:
+        if db is None:
+            print("⚠️ Cannot create active checkout - database unavailable")
+            return None
+
+        # Get student's custom allowed time.
+        # If no custom value exists, use 480 minutes (8 hours).
+        allowed_minutes = float(
+            student.get('custom_allowed_time_minutes', 480)
+        )
+
+        # Calculate exact deadline.
+        deadline = out_time + timedelta(
+            minutes=allowed_minutes
+        )
+
+        active_checkout = {
+            'roll_no': roll_no,
+            'student_name': student.get('name', 'Unknown'),
+            'student_hostel': student.get('hostel', 'Unknown'),
+
+            'out_time': out_time,
+            'allowed_minutes': allowed_minutes,
+            'deadline': deadline,
+
+            'status': 'active',
+            'alert_sent': False,
+
+            'recorded_by': user_role,
+            'offline_sync': offline_sync,
+            'created_at': datetime.now(INDIA_TZ),
+            'updated_at': datetime.now(INDIA_TZ)
+        }
+
+        db.active_checkouts.update_one(
+            {'roll_no': roll_no},
+            {'$set': active_checkout},
+            upsert=True
+        )
+
+        print(
+            f"⏱️ ACTIVE CHECKOUT CREATED | "
+            f"Roll: {roll_no} | "
+            f"Out: {out_time} | "
+            f"Allowed: {allowed_minutes} min | "
+            f"Deadline: {deadline}"
+        )
+
+        return active_checkout
+
+    except Exception as e:
+        print(
+            f"❌ Error creating active checkout "
+            f"for {roll_no}: {e}"
+        )
+        return None
+
+
+def monitor_active_checkouts():
+    """
+    Proactively detect students who have exceeded their
+    allowed time outside.
+
+    This function does NOT wait for the student to scan IN.
+    """
+
+    try:
+        if db is None:
+            print("⚠️ Monitoring skipped - database unavailable")
+            return
+
+        now = datetime.now(INDIA_TZ)
+
+        # Find active students whose deadline has passed
+        expired_checkouts = db.active_checkouts.find({
+            'status': 'active',
+            'deadline': {'$lte': now},
+            'alert_sent': False
+        })
+
+        for checkout in expired_checkouts:
+
+            roll_no = checkout['roll_no']
+
+            # Atomically claim this checkout so that
+            # the same violation is not processed twice.
+            claim_result = db.active_checkouts.update_one(
+                {
+                    '_id': checkout['_id'],
+                    'status': 'active',
+                    'alert_sent': False
+                },
+                {
+                    '$set': {
+                        'alert_sent': True,
+                        'alert_sent_at': now,
+                        'status': 'violation'
+                    }
+                }
+            )
+
+            # If another worker/process already claimed it,
+            # skip this record.
+            if claim_result.modified_count != 1:
+                continue
+
+            allowed_minutes = checkout.get(
+                'allowed_minutes',
+                480
+            )
+
+            out_time = checkout.get('out_time')
+
+            exceeded_minutes = (
+                (now - out_time).total_seconds() / 60
+                - allowed_minutes
+            )
+
+            exceeded_minutes = max(
+                0,
+                round(exceeded_minutes, 2)
+            )
+
+            # Create disciplinary record
+            disciplinary_record = {
+                'date': now,
+                'time': now.strftime('%H:%M'),
+
+                'description': (
+                    f'Exceeded allowed time outside by '
+                    f'{exceeded_minutes} minutes. '
+                    f'Out at: '
+                    f'{out_time.strftime("%Y-%m-%d %H:%M")}, '
+                    f'Allowed: {allowed_minutes} minutes'
+                ),
+
+                'action_taken': (
+                    f'Warning issued for exceeding '
+                    f'{allowed_minutes}-minute limit'
+                ),
+
+                'recorded_by': 'system_monitor',
+                'recorded_at': now,
+
+                'time_exceeded_minutes': exceeded_minutes,
+
+                'auto_generated': True,
+                'proactive_monitoring': True,
+
+                'allowed_time_limit': allowed_minutes
+            }
+
+            db.students.update_one(
+                {'roll_no': roll_no},
+                {
+                    '$push': {
+                        'disciplinary_records':
+                            disciplinary_record
+                    }
+                }
+            )
+
+            # Create realtime alert
+            alert_message = {
+                'type': 'allowed_time_violation',
+
+                'message': (
+                    f'🚨 Student {roll_no} exceeded '
+                    f'allowed time outside'
+                ),
+
+                'details': {
+                    'roll_no': roll_no,
+                    'student_name': checkout.get(
+                        'student_name',
+                        'Unknown'
+                    ),
+                    'student_hostel': checkout.get(
+                        'student_hostel',
+                        'Unknown'
+                    ),
+                    'out_time': out_time,
+                    'allowed_minutes': allowed_minutes,
+                    'deadline': checkout.get('deadline'),
+                    'exceeded_minutes': exceeded_minutes
+                },
+
+                'timestamp': now,
+                'priority': 'high',
+
+                'auto_generated': True,
+                'proactive_monitoring': True
+            }
+
+            db.realtime_alerts.insert_one(
+                alert_message
+            )
+
+            print(
+                f"🚨 PROACTIVE VIOLATION | "
+                f"Student: {roll_no} | "
+                f"Exceeded by: {exceeded_minutes} min"
+            )
+
+    except Exception as e:
+        print(
+            f"❌ Error in active checkout monitoring: {e}"
+        )
 
 # Enhanced security logging
 def log_security_event(event_type, user_role, device_id, ip_address, details=None):
@@ -711,6 +952,16 @@ scheduler.add_job(
     id='monthly_data_cleanup'
 )
 
+# Proactive allowed-time monitoring
+# Runs once every 60 seconds.
+scheduler.add_job(
+    func=monitor_active_checkouts,
+    trigger='interval',
+    seconds=60,
+    id='active_checkout_monitor',
+    replace_existing=True
+)
+
 # Also run cleanup when the app starts for any stale records
 cleanup_old_movement_records()
 
@@ -1063,9 +1314,18 @@ def handle_security_scan(selected_role):
                 {'roll_no': roll_no},
                 {'$push': {'in_out_records': out_record}}
             )
-            
+
+            # Create active checkout for proactive monitoring
+            create_active_checkout(
+                roll_no=roll_no,
+                student=student,
+                out_time=now,
+                user_role=user_role,
+                offline_sync=is_offline_sync
+            )
+
             print(f"✅ OUT record created: {roll_no} at {now}")
-            
+
             return jsonify({
                 'message': 'Check out recorded successfully',
                 'student_name': student.get('name', 'Unknown'),
@@ -1144,6 +1404,16 @@ def handle_security_scan(selected_role):
                     'in_out_records.$.status': 'inside',
                     'in_out_records.$.offline_sync': is_offline_sync
                 }}
+            )
+
+            # Student has returned.
+            # Remove the active checkout from proactive monitoring.
+            db.active_checkouts.delete_one({
+                'roll_no': roll_no
+            })
+
+            print(
+                f"✅ Active checkout removed after IN: {roll_no}"
             )
             
             # Get student's custom allowed time or use default
@@ -2747,8 +3017,21 @@ def sync_security_scans():
                     {'roll_no': roll_no},
                     {'$push': {'in_out_records': out_record}}
                 )
-                
-                results.append({'success': True, 'roll_no': roll_no, 'action': 'out'})
+
+                # Create active checkout for proactive monitoring
+                create_active_checkout(
+                    roll_no=roll_no,
+                    student=student,
+                    out_time=now,
+                    user_role=user_role,
+                    offline_sync=True
+                )
+
+                results.append({
+                    'success': True,
+                    'roll_no': roll_no,
+                    'action': 'out'
+                })
                 
             elif action == 'in':
                 # Find the latest out record without in time
@@ -2822,6 +3105,12 @@ def sync_security_scans():
                         'in_out_records.$.offline_sync': True
                     }}
                 )
+                
+                # Student has returned.
+                # Remove the active checkout from proactive monitoring.
+                db.active_checkouts.delete_one({
+                    'roll_no': roll_no
+                })
                 
                 # ✅ Optional: Check for time limit violation
                 max_allowed_time = student.get('custom_allowed_time_minutes', 480)

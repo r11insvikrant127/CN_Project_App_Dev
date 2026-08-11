@@ -337,25 +337,36 @@ def create_active_checkout(
 
 
 def monitor_active_checkouts():
-    print(
-        f"🔄 ACTIVE CHECKOUT MONITOR RUNNING | "
-        f"{datetime.now(INDIA_TZ)}"
-    )
+    """
+    Proactively monitor students who are currently outside.
+
+    If the allowed deadline has passed:
+    1. Mark the checkout as a violation.
+    2. Create a disciplinary record.
+    3. Create a realtime alert.
+    """
 
     try:
+        print(
+            f"🔄 ACTIVE CHECKOUT MONITOR RUNNING | "
+            f"{datetime.now(INDIA_TZ)}"
+        )
+
         if db is None:
             print("⚠️ Monitoring skipped - database unavailable")
             return
 
-        now = datetime.now(INDIA_TZ)
-
-        now_utc = now.astimezone(timezone.utc).replace(tzinfo=None)
+        # MongoDB stores datetime values as UTC.
+        # Use naive UTC here so comparison is consistent.
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
         print(
             f"🕒 MONITOR TIME | "
-            f"IST={now} | UTC={now_utc}"
+            f"UTC={now_utc} | "
+            f"IST={datetime.now(INDIA_TZ)}"
         )
 
+        # Get every currently active checkout.
         active_checkouts = list(
             db.active_checkouts.find({
                 'status': 'active'
@@ -367,33 +378,76 @@ def monitor_active_checkouts():
             f"{len(active_checkouts)}"
         )
 
-        for active in active_checkouts:
-            print(
-                f"   👤 {active.get('roll_no')} | "
-                f"deadline={active.get('deadline')} | "
-                f"status={active.get('status')} | "
-                f"alert_sent={active.get('alert_sent')}"
+        if not active_checkouts:
+            print("ℹ️ No students currently outside.")
+            return
+
+        # Check each active checkout individually.
+        for checkout in active_checkouts:
+
+            roll_no = checkout.get('roll_no')
+            deadline = checkout.get('deadline')
+            out_time = checkout.get('out_time')
+            allowed_minutes = float(
+                checkout.get('allowed_minutes', 480)
             )
 
-        expired_checkouts = list(
-            db.active_checkouts.find({
-                'status': 'active',
-                'deadline': {'$lte': now_utc},
-                'alert_sent': False
-            })
-        )
+            print(
+                f"👤 CHECKING | "
+                f"Roll={roll_no} | "
+                f"Deadline={deadline} | "
+                f"Now={now_utc} | "
+                f"Allowed={allowed_minutes} min"
+            )
 
-        print(
-            f"🔍 EXPIRED ACTIVE CHECKOUTS FOUND: "
-            f"{len(expired_checkouts)}"
-        )
+            if deadline is None:
+                print(
+                    f"⚠️ No deadline found for {roll_no}. "
+                    f"Skipping."
+                )
+                continue
 
-        for checkout in expired_checkouts:
+            # MongoDB returns datetime as naive UTC in this setup.
+            # Normalize explicitly just in case.
+            if deadline.tzinfo is not None:
+                deadline_utc = (
+                    deadline
+                    .astimezone(timezone.utc)
+                    .replace(tzinfo=None)
+                )
+            else:
+                deadline_utc = deadline
 
-            roll_no = checkout['roll_no']
+            print(
+                f"   ⏱️ Deadline comparison | "
+                f"now={now_utc} | "
+                f"deadline={deadline_utc} | "
+                f"expired={now_utc >= deadline_utc}"
+            )
 
-            # Atomically claim this checkout so that
-            # the same violation is not processed twice.
+            # Student has NOT exceeded allowed time yet.
+            if now_utc < deadline_utc:
+                remaining_seconds = (
+                    deadline_utc - now_utc
+                ).total_seconds()
+
+                print(
+                    f"   ✅ Still within allowed time | "
+                    f"Remaining={round(remaining_seconds, 1)} sec"
+                )
+                continue
+
+            # -------------------------------------------------
+            # DEADLINE EXCEEDED
+            # -------------------------------------------------
+
+            print(
+                f"🚨 DEADLINE EXCEEDED | "
+                f"Student={roll_no}"
+            )
+
+            # Atomically claim the violation.
+            # This prevents duplicate processing.
             claim_result = db.active_checkouts.update_one(
                 {
                     '_id': checkout['_id'],
@@ -402,51 +456,74 @@ def monitor_active_checkouts():
                 },
                 {
                     '$set': {
+                        'status': 'violation',
                         'alert_sent': True,
-                        'alert_sent_at': now,
-                        'status': 'violation'
+                        'alert_sent_at': now_utc,
+                        'updated_at': now_utc
                     }
                 }
             )
 
-            # If another worker/process already claimed it,
-            # skip this record.
             if claim_result.modified_count != 1:
+                print(
+                    f"⚠️ Violation already processed for "
+                    f"{roll_no}. Skipping."
+                )
                 continue
 
-            allowed_minutes = checkout.get(
-                'allowed_minutes',
-                480
-            )
+            # Normalize out_time for calculation.
+            if out_time is None:
+                print(
+                    f"⚠️ No out_time found for {roll_no}. "
+                    f"Skipping disciplinary calculation."
+                )
+                continue
 
-            out_time = checkout.get('out_time')
+            if out_time.tzinfo is not None:
+                out_time_utc = (
+                    out_time
+                    .astimezone(timezone.utc)
+                    .replace(tzinfo=None)
+                )
+            else:
+                out_time_utc = out_time
 
-            # MongoDB may return datetime values without timezone
-            # information. Convert them to IST before performing
-            # datetime arithmetic.
-            if out_time is not None and out_time.tzinfo is None:
-                out_time = out_time.replace(tzinfo=INDIA_TZ)
-
-            exceeded_minutes = (
-                (now - out_time).total_seconds() / 60
-                - allowed_minutes
-            )
+            # Calculate exact exceeded time.
+            actual_minutes = (
+                now_utc - out_time_utc
+            ).total_seconds() / 60
 
             exceeded_minutes = max(
                 0,
-                round(exceeded_minutes, 2)
+                round(
+                    actual_minutes - allowed_minutes,
+                    2
+                )
             )
 
-            # Create disciplinary record
+            print(
+                f"⏰ TIME VIOLATION | "
+                f"Roll={roll_no} | "
+                f"Actual={round(actual_minutes, 2)} min | "
+                f"Allowed={allowed_minutes} min | "
+                f"Exceeded={exceeded_minutes} min"
+            )
+
+            # -------------------------------------------------
+            # 1. CREATE DISCIPLINARY RECORD
+            # -------------------------------------------------
+
             disciplinary_record = {
-                'date': now,
-                'time': now.strftime('%H:%M'),
+                'date': now_utc,
+                'time': datetime.now(
+                    INDIA_TZ
+                ).strftime('%H:%M'),
 
                 'description': (
                     f'Exceeded allowed time outside by '
                     f'{exceeded_minutes} minutes. '
                     f'Out at: '
-                    f'{out_time.strftime("%Y-%m-%d %H:%M")}, '
+                    f'{out_time_utc.strftime("%Y-%m-%d %H:%M")}, '
                     f'Allowed: {allowed_minutes} minutes'
                 ),
 
@@ -456,7 +533,7 @@ def monitor_active_checkouts():
                 ),
 
                 'recorded_by': 'system_monitor',
-                'recorded_at': now,
+                'recorded_at': now_utc,
 
                 'time_exceeded_minutes': exceeded_minutes,
 
@@ -466,7 +543,7 @@ def monitor_active_checkouts():
                 'allowed_time_limit': allowed_minutes
             }
 
-            db.students.update_one(
+            disciplinary_result = db.students.update_one(
                 {'roll_no': roll_no},
                 {
                     '$push': {
@@ -476,7 +553,16 @@ def monitor_active_checkouts():
                 }
             )
 
-            # Create realtime alert
+            print(
+                f"📝 DISCIPLINARY RECORD CREATED | "
+                f"Roll={roll_no} | "
+                f"Modified={disciplinary_result.modified_count}"
+            )
+
+            # -------------------------------------------------
+            # 2. CREATE REALTIME ALERT
+            # -------------------------------------------------
+
             alert_message = {
                 'type': 'allowed_time_violation',
 
@@ -487,40 +573,55 @@ def monitor_active_checkouts():
 
                 'details': {
                     'roll_no': roll_no,
+
                     'student_name': checkout.get(
                         'student_name',
                         'Unknown'
                     ),
+
                     'student_hostel': checkout.get(
                         'student_hostel',
                         'Unknown'
                     ),
-                    'out_time': out_time,
+
+                    'out_time': out_time_utc,
+
                     'allowed_minutes': allowed_minutes,
-                    'deadline': checkout.get('deadline'),
+
+                    'deadline': deadline_utc,
+
                     'exceeded_minutes': exceeded_minutes
                 },
 
-                'timestamp': now,
+                'timestamp': now_utc,
+
                 'priority': 'high',
 
                 'auto_generated': True,
+
                 'proactive_monitoring': True
             }
 
-            db.realtime_alerts.insert_one(
+            alert_result = db.realtime_alerts.insert_one(
                 alert_message
             )
 
             print(
-                f"🚨 PROACTIVE VIOLATION | "
-                f"Student: {roll_no} | "
-                f"Exceeded by: {exceeded_minutes} min"
+                f"🔔 REALTIME ALERT CREATED | "
+                f"Roll={roll_no} | "
+                f"AlertID={alert_result.inserted_id}"
+            )
+
+            print(
+                f"🚨 PROACTIVE VIOLATION COMPLETE | "
+                f"Student={roll_no} | "
+                f"Exceeded={exceeded_minutes} min"
             )
 
     except Exception as e:
         print(
-            f"❌ Error in active checkout monitoring: {e}"
+            f"❌ ERROR IN ACTIVE CHECKOUT MONITORING | "
+            f"{type(e).__name__}: {e}"
         )
 
 # Enhanced security logging
@@ -999,7 +1100,7 @@ scheduler.add_job(
 )
 print(
     "✅ Proactive monitoring scheduler registered "
-    "to run every 60 seconds"
+    "to run every 10 seconds"
 )
 
 # Also run cleanup when the app starts for any stale records

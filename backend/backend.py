@@ -343,6 +343,10 @@ def monitor_active_checkouts():
 
     This function does NOT wait for the student to scan IN.
     """
+    print(
+        f"🔄 ACTIVE CHECKOUT MONITOR RUNNING | "
+        f"{datetime.now(INDIA_TZ)}"
+    )
 
     try:
         if db is None:
@@ -957,9 +961,13 @@ scheduler.add_job(
 scheduler.add_job(
     func=monitor_active_checkouts,
     trigger='interval',
-    seconds=60,
+    seconds=10,
     id='active_checkout_monitor',
     replace_existing=True
+)
+print(
+    "✅ Proactive monitoring scheduler registered "
+    "to run every 60 seconds"
 )
 
 # Also run cleanup when the app starts for any stale records
@@ -3105,7 +3113,7 @@ def sync_security_scans():
                         'in_out_records.$.offline_sync': True
                     }}
                 )
-                
+
                 # Student has returned.
                 # Remove the active checkout from proactive monitoring.
                 db.active_checkouts.delete_one({

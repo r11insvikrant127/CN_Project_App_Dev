@@ -1504,7 +1504,7 @@ def handle_security_scan(selected_role):
                 'offline_sync': is_offline_sync
             }), 200
             
-                elif action == 'in':
+        elif action == 'in':
             # Find the latest active OUT record AND remember its exact index.
             # Using the index prevents MongoDB from accidentally updating
             # another record having the same/similar out_time.
@@ -1512,7 +1512,7 @@ def handle_security_scan(selected_role):
 
             latest_out_record = None
             latest_out_index = None
-
+            records = student.get('in_out_records', [])
             for i in range(len(records) - 1, -1, -1):
                 record = records[i]
 
@@ -1575,6 +1575,23 @@ def handle_security_scan(selected_role):
                 )
                 now = utc_time.astimezone(INDIA_TZ)
             else:
+                now = datetime.now(INDIA_TZ)
+
+            # ---------------------------------------------------------
+            # SAFETY: NEVER ALLOW IN TIME BEFORE OUT TIME
+            # ---------------------------------------------------------
+
+            if now < out_time:
+                print(
+                    "⚠️ INVALID OFFLINE TIMESTAMP | "
+                    f"Roll={roll_no} | "
+                    f"OUT={out_time} | "
+                    f"IN={now} | "
+                    "Using current server time for IN."
+                )
+
+                # The mobile device supplied an invalid/stale timestamp.
+                # Use server time instead so duration can never be negative.
                 now = datetime.now(INDIA_TZ)
 
             print("🔍 DEBUG TIME CALCULATION")
@@ -3385,69 +3402,150 @@ def sync_security_scans():
                 print(f"   In time:  {now} (tz: {now.tzinfo})")
                 
                 # ✅ NOW both datetimes are properly in IST, safe to subtract
-                time_spent = (now - out_time).total_seconds() / 60
-                
-                print(f"🔍 Calculated time spent: {time_spent} minutes")
-                
-                # ✅ Use raw_out_time (original) for MongoDB query to ensure match
-                db.students.update_one(
-                    {'roll_no': roll_no, 'in_out_records.out_time': raw_out_time},
-                    {'$set': {
-                        'in_out_records.$.in_time': now,
-                        'in_out_records.$.time_spent_minutes': time_spent,
-                        'in_out_records.$.action': 'in',
-                        'in_out_records.$.status': 'inside',
-                        'in_out_records.$.offline_sync': True
-                    }}
+                                time_spent = (
+                    now - out_time
+                ).total_seconds() / 60
+
+                # -------------------------------------------------
+                # NEVER ALLOW NEGATIVE DURATION
+                # -------------------------------------------------
+
+                if time_spent < 0:
+                    print(
+                        f"⚠️ INVALID OFFLINE SCAN ORDER | "
+                        f"Roll={roll_no} | "
+                        f"OUT={out_time} | "
+                        f"IN={now} | "
+                        f"Duration={time_spent:.4f}"
+                    )
+
+                    # Mobile device supplied a stale/wrong timestamp.
+                    # Use server time instead.
+                    now = datetime.now(INDIA_TZ)
+
+                    time_spent = (
+                        now - out_time
+                    ).total_seconds() / 60
+
+                # If server time is STILL before OUT time,
+                # reject the scan instead of storing bad data.
+                if time_spent < 0:
+                    results.append({
+                        'success': False,
+                        'roll_no': roll_no,
+                        'error': 'Invalid server timestamp: IN is earlier than OUT'
+                    })
+                    continue
+
+                print(
+                    f"🔍 Calculated time spent: "
+                    f"{time_spent:.4f} minutes"
                 )
 
-                # Student has returned.
-                # Remove the active checkout from proactive monitoring.
+                # -------------------------------------------------
+                # UPDATE THE EXACT OUT RECORD
+                # -------------------------------------------------
+
+                db.students.update_one(
+                    {
+                        'roll_no': roll_no,
+                        'in_out_records.out_time': raw_out_time
+                    },
+                    {
+                        '$set': {
+                            'in_out_records.$.in_time': now,
+                            'in_out_records.$.time_spent_minutes': round(
+                                time_spent, 4
+                            ),
+                            'in_out_records.$.action': 'in',
+                            'in_out_records.$.status': 'inside',
+                            'in_out_records.$.offline_sync': True
+                        }
+                    }
+                )
+
+                # -------------------------------------------------
+                # REMOVE ACTIVE CHECKOUT
+                # -------------------------------------------------
+
                 db.active_checkouts.delete_one({
                     'roll_no': roll_no
                 })
-                
-                # ✅ Optional: Check for time limit violation
-                max_allowed_time = student.get('custom_allowed_time_minutes', 480)
-                
+
+                # -------------------------------------------------
+                # CHECK ALLOWED TIME
+                # -------------------------------------------------
+
+                max_allowed_time = float(
+                    student.get(
+                        'custom_allowed_time_minutes',
+                        480
+                    )
+                )
+
                 if time_spent > max_allowed_time:
+
                     disciplinary_record = {
                         'date': now,
                         'time': now.strftime('%H:%M'),
-                        'description': f'Exceeded allowed time outside by {round(time_spent - max_allowed_time, 2)} minutes. '
-                                    f'Out at: {out_time.strftime("%Y-%m-%d %H:%M")}, '
-                                    f'In at: {now.strftime("%Y-%m-%d %H:%M")}, '
-                                    f'Allowed: {max_allowed_time} minutes',
-                        'action_taken': f'Warning issued for exceeding {max_allowed_time}-minute limit',
+                        'description': (
+                            f'Exceeded allowed time outside by '
+                            f'{round(time_spent - max_allowed_time, 2)} minutes. '
+                            f'Out at: '
+                            f'{out_time.strftime("%Y-%m-%d %H:%M")}, '
+                            f'In at: '
+                            f'{now.strftime("%Y-%m-%d %H:%M")}, '
+                            f'Allowed: {max_allowed_time} minutes'
+                        ),
+                        'action_taken': (
+                            f'Warning issued for exceeding '
+                            f'{max_allowed_time}-minute limit'
+                        ),
                         'recorded_by': user_role,
                         'recorded_at': now,
-                        'time_exceeded_minutes': round(time_spent - max_allowed_time, 2),
+                        'time_exceeded_minutes': round(
+                            time_spent - max_allowed_time,
+                            2
+                        ),
                         'auto_generated': True,
                         'offline_sync': True,
                         'allowed_time_limit': max_allowed_time
                     }
-                    
+
                     db.students.update_one(
                         {'roll_no': roll_no},
-                        {'$push': {'disciplinary_records': disciplinary_record}}
+                        {
+                            '$push': {
+                                'disciplinary_records':
+                                    disciplinary_record
+                            }
+                        }
                     )
-                    
+
                     results.append({
-                        'success': True, 
-                        'roll_no': roll_no, 
-                        'action': 'in', 
-                        'warning': f'Time exceeded limit by {round(time_spent - max_allowed_time, 2)} minutes',
-                        'time_spent_minutes': round(time_spent, 2)
+                        'success': True,
+                        'roll_no': roll_no,
+                        'action': 'in',
+                        'warning': (
+                            f'Time exceeded limit by '
+                            f'{round(time_spent - max_allowed_time, 2)} minutes'
+                        ),
+                        'time_spent_minutes': round(
+                            time_spent,
+                            2
+                        )
                     })
+
                 else:
                     results.append({
-                        'success': True, 
-                        'roll_no': roll_no, 
+                        'success': True,
+                        'roll_no': roll_no,
                         'action': 'in',
-                        'time_spent_minutes': round(time_spent, 2)
+                        'time_spent_minutes': round(
+                            time_spent,
+                            2
+                        )
                     })
-            else:
-                results.append({'success': False, 'roll_no': roll_no, 'error': 'Invalid action'})
         
         return jsonify({'results': results}), 200
         

@@ -349,7 +349,6 @@ def monitor_active_checkouts():
 
         now = datetime.now(INDIA_TZ)
 
-        # MongoDB stores BSON datetimes as UTC without tzinfo.
         now_utc = now.astimezone(timezone.utc).replace(tzinfo=None)
 
         print(
@@ -358,23 +357,23 @@ def monitor_active_checkouts():
         )
 
         active_checkouts = list(
-        db.active_checkouts.find({
-            'status': 'active'
-        })
-    )
-
-    print(
-        f"📊 TOTAL ACTIVE CHECKOUTS: "
-        f"{len(active_checkouts)}"
-    )
-
-    for active in active_checkouts:
-        print(
-            f"   👤 {active.get('roll_no')} | "
-            f"deadline={active.get('deadline')} | "
-            f"status={active.get('status')} | "
-            f"alert_sent={active.get('alert_sent')}"
+            db.active_checkouts.find({
+                'status': 'active'
+            })
         )
+
+        print(
+            f"📊 TOTAL ACTIVE CHECKOUTS: "
+            f"{len(active_checkouts)}"
+        )
+
+        for active in active_checkouts:
+            print(
+                f"   👤 {active.get('roll_no')} | "
+                f"deadline={active.get('deadline')} | "
+                f"status={active.get('status')} | "
+                f"alert_sent={active.get('alert_sent')}"
+            )
 
         expired_checkouts = list(
             db.active_checkouts.find({

@@ -13,7 +13,7 @@ def emit_violation_alert(alert_data):
     """
     try:
         socketio.emit(
-            'violation_alert',
+            'allowed_time_violation',
             alert_data
         )
 

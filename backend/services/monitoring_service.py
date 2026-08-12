@@ -4,6 +4,12 @@ Monitoring Service - Proactive monitoring of student checkouts
 """
 
 from datetime import datetime, timedelta, timezone
+from bson import ObjectId
+
+# Import utils
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.time_utils import INDIA_TZ, get_ist_now, normalize_datetime_to_ist
 from utils.db_utils import get_db
 
@@ -67,6 +73,7 @@ def monitor_active_checkouts(db=None):
     1. Mark the checkout as a violation.
     2. Create a disciplinary record.
     3. Create a realtime alert.
+    4. Store the IDs in the active checkout for later finalization.
     """
     if db is None:
         db = get_db()
@@ -121,7 +128,9 @@ def _check_single_checkout(checkout, now_utc, db):
         print(f"   ✅ Still within allowed time | Remaining={round(remaining_seconds, 1)} sec")
         return
     
+    # ============================================================
     # DEADLINE EXCEEDED - Process violation
+    # ============================================================
     print(f"🚨 DEADLINE EXCEEDED | Student={roll_no}")
     
     # Atomically claim the violation
@@ -161,21 +170,63 @@ def _check_single_checkout(checkout, now_utc, db):
     
     print(f"⏰ TIME VIOLATION | Roll={roll_no} | Exceeded={exceeded_minutes} min")
     
-    # Create disciplinary record
-    _create_disciplinary_record(roll_no, out_time_utc, allowed_minutes, 
-                                exceeded_minutes, checkout, now_utc, db)
+    # ============================================================
+    # CREATE DISCIPLINARY RECORD WITH ID
+    # ============================================================
+    disciplinary_record_id = _create_disciplinary_record(
+        roll_no, out_time_utc, allowed_minutes, 
+        exceeded_minutes, checkout, now_utc, db
+    )
     
-    # Create realtime alert
-    _create_violation_alert(roll_no, checkout, out_time_utc, allowed_minutes, 
-                           exceeded_minutes, now_utc, db)
+    # ============================================================
+    # CREATE REALTIME ALERT WITH ID
+    # ============================================================
+    alert_id = _create_violation_alert(
+        roll_no, checkout, out_time_utc, allowed_minutes, 
+        exceeded_minutes, now_utc, db
+    )
+    
+    # ============================================================
+    # STORE IDs IN ACTIVE CHECKOUT FOR FINALIZATION
+    # ============================================================
+    if disciplinary_record_id or alert_id:
+        update_data = {'updated_at': now_utc}
+        if disciplinary_record_id:
+            update_data['disciplinary_record_id'] = disciplinary_record_id
+        if alert_id:
+            update_data['alert_id'] = alert_id
+        if exceeded_minutes>0:
+            update_data['proactive_exceeded_minutes'] = exceeded_minutes
+        
+        db.active_checkouts.update_one(
+            {'_id': checkout['_id']},
+            {'$set': update_data}
+        )
+        
+        print(
+            f"💾 STORED IDs IN ACTIVE CHECKOUT | "
+            f"Roll={roll_no} | "
+            f"DisciplinaryID={disciplinary_record_id} | "
+            f"AlertID={alert_id} | "
+            f"Exceeded={exceeded_minutes:.2f}"
+        )
     
     print(f"🚨 PROACTIVE VIOLATION COMPLETE | Student={roll_no} | Exceeded={exceeded_minutes} min")
 
 
 def _create_disciplinary_record(roll_no, out_time_utc, allowed_minutes, 
                                 exceeded_minutes, checkout, now_utc, db):
-    """Create a disciplinary record for time violation"""
+    """
+    Create a disciplinary record for time violation.
+    Returns the ObjectId of the created record.
+    """
+    # ============================================================
+    # FIX: Create ID explicitly before inserting
+    # ============================================================
+    disciplinary_record_id = ObjectId()
+    
     disciplinary_record = {
+        '_id': disciplinary_record_id,  # Explicit ID
         'date': now_utc,
         'time': get_ist_now().strftime('%H:%M'),
         'description': (
@@ -187,21 +238,40 @@ def _create_disciplinary_record(roll_no, out_time_utc, allowed_minutes,
         'recorded_by': 'system_monitor',
         'recorded_at': now_utc,
         'time_exceeded_minutes': exceeded_minutes,
+        'proactive_exceeded_minutes': exceeded_minutes,  # Store initial value
+        'final_exceeded_minutes': exceeded_minutes,  # Will be updated on check-in
+        'actual_duration_minutes': None,  # Will be updated on check-in
         'auto_generated': True,
         'proactive_monitoring': True,
-        'allowed_time_limit': allowed_minutes
+        'allowed_time_limit': allowed_minutes,
+        'violation_status': 'pending_confirmation',  # Critical for tracking
+        'detection_method': 'proactive_monitoring',
+        'out_time': out_time_utc,
+        'in_time': None,  # Will be set on check-in
+        'finalized_at': None  # Will be set on check-in
     }
     
-    result = db.students.update_one(
+    db.students.update_one(
         {'roll_no': roll_no},
         {'$push': {'disciplinary_records': disciplinary_record}}
     )
-    print(f"📝 DISCIPLINARY RECORD CREATED | Roll={roll_no} | Modified={result.modified_count}")
+    
+    print(
+        f"📝 DISCIPLINARY RECORD CREATED | "
+        f"Roll={roll_no} | "
+        f"ID={disciplinary_record_id} | "
+        f"Exceeded={exceeded_minutes:.2f} min"
+    )
+    
+    return disciplinary_record_id
 
 
 def _create_violation_alert(roll_no, checkout, out_time_utc, allowed_minutes, 
                             exceeded_minutes, now_utc, db):
-    """Create a realtime alert for time violation"""
+    """
+    Create a realtime alert for time violation.
+    Returns the ObjectId of the created alert.
+    """
     alert_message = {
         'type': 'allowed_time_violation',
         'message': f'🚨 Student {roll_no} exceeded allowed time outside',
@@ -212,13 +282,50 @@ def _create_violation_alert(roll_no, checkout, out_time_utc, allowed_minutes,
             'out_time': out_time_utc,
             'allowed_minutes': allowed_minutes,
             'deadline': checkout.get('deadline'),
-            'exceeded_minutes': exceeded_minutes
+            'exceeded_minutes': exceeded_minutes,
+            'proactive_exceeded_minutes': exceeded_minutes,
+            'final_exceeded_minutes': None,  # Will be updated on check-in
+            'actual_duration_minutes': None,  # Will be updated on check-in
+            'violation_status': 'pending_confirmation',
+            'in_time': None
         },
         'timestamp': now_utc,
         'priority': 'high',
         'auto_generated': True,
-        'proactive_monitoring': True
+        'proactive_monitoring': True,
+        'finalized_at': None
     }
     
     result = db.realtime_alerts.insert_one(alert_message)
-    print(f"🔔 REALTIME ALERT CREATED | Roll={roll_no} | AlertID={result.inserted_id}")
+    alert_id = result.inserted_id
+    
+    print(
+        f"🔔 REALTIME ALERT CREATED | "
+        f"Roll={roll_no} | "
+        f"AlertID={alert_id}"
+    )
+    
+    return alert_id
+
+
+def cleanup_stale_checkouts(hours=24, db=None):
+    """
+    Clean up stale active checkouts that are older than specified hours
+    """
+    if db is None:
+        db = get_db()
+    
+    if db is None:
+        return
+    
+    cutoff_time = get_ist_now() - timedelta(hours=hours)
+    
+    result = db.active_checkouts.delete_many({
+        'created_at': {'$lt': cutoff_time},
+        'status': 'active'
+    })
+    
+    if result.deleted_count > 0:
+        print(f"🧹 Cleaned up {result.deleted_count} stale checkouts")
+    
+    return result.deleted_count

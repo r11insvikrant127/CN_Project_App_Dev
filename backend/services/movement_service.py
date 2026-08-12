@@ -4,16 +4,13 @@ Movement Service - Handles all student check-in/check-out operations
 Extracted from backend.py for better maintainability
 """
 
-from datetime import datetime, timedelta, timezone
-from bson import ObjectId
-import time
-from flask import jsonify
+from datetime import datetime, timezone
 
 # Import utils
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.time_utils import get_ist_now, normalize_datetime_to_ist, calculate_duration_minutes
+from utils.time_utils import INDIA_TZ,get_ist_now, normalize_datetime_to_ist, calculate_duration_minutes
 from utils.db_utils import get_db
 
 # Import monitoring service for active checkout
@@ -70,7 +67,7 @@ def process_security_scan(user_role, data, db=None):
     if is_offline_sync and original_timestamp:
         # Convert UTC timestamp to IST
         utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
-        now = utc_time.astimezone(INDIA_TZ)  # INDIA_TZ will be imported
+        now = utc_time.astimezone(INDIA_TZ)
     else:
         now = get_ist_now()
     
@@ -167,25 +164,30 @@ def _process_check_in(student, roll_no, now, user_role, is_offline_sync, db):
         print(f"❌ Error normalizing OUT time: {e}")
         return {'message': 'Invalid OUT timestamp'}, 500
     
-    # Safety: Never allow IN time before OUT time
-    if now < out_time:
-        print(f"⚠️ INVALID OFFLINE TIMESTAMP | Roll={roll_no} | OUT={out_time} | IN={now}")
-        # Use server time instead
-        now = get_ist_now()
-    
+    # ============================================================
+    # FIX: Calculate duration FIRST, then validate
+    # ============================================================
     # Calculate time spent
     time_spent_minutes = calculate_duration_minutes(out_time, now)
     
-    # Validate time spent is not negative
+    # Safety: Never allow negative duration
     if time_spent_minutes < 0:
-        return {
-            'success': False,
-            'message': 'Invalid scan time: IN time is earlier than OUT time.',
-            'out_time': out_time.isoformat(),
-            'in_time': now.isoformat(),
-            'time_spent_minutes': round(time_spent_minutes, 2),
-            'offline_sync': is_offline_sync
-        }, 400
+        print(f"⚠️ INVALID TIMESTAMP | Roll={roll_no} | OUT={out_time} | IN={now}")
+        # Use server time instead
+        now = get_ist_now()
+        time_spent_minutes = calculate_duration_minutes(out_time, now)
+        
+        # If still negative, reject the scan
+        if time_spent_minutes < 0:
+            return {
+                'success': False,
+                'message': 'Invalid scan time: IN time is earlier than OUT time.',
+                'out_time': out_time.isoformat(),
+                'in_time': now.isoformat(),
+                'time_spent_minutes': round(time_spent_minutes, 2),
+                'offline_sync': is_offline_sync
+            }, 400
+    # ============================================================
     
     # Update the exact OUT record with IN time
     update_result = db.students.update_one(
@@ -205,12 +207,188 @@ def _process_check_in(student, roll_no, now, user_role, is_offline_sync, db):
         print(f"❌ Failed to update movement record for {roll_no}")
         return {'message': 'Failed to update check-in record'}, 500
     
-    # Remove from active checkout monitoring
-    db.active_checkouts.delete_one({'roll_no': roll_no})
-    print(f"✅ Active checkout removed after IN: {roll_no}")
-    
+    # Get the active checkout BEFORE deleting it.
+    # It may contain the proactive violation information.
+    active_checkout = db.active_checkouts.find_one(
+        {'roll_no': roll_no}
+    )
+
     # Check if time exceeded allowed limit
-    max_allowed_time = float(student.get('custom_allowed_time_minutes', 480))
+    max_allowed_time = float(
+        student.get('custom_allowed_time_minutes', 480)
+    )
+
+    # Final exceeded time after actual check-in
+    final_exceeded_minutes = round(
+        max(0, time_spent_minutes - max_allowed_time),
+        2
+    )
+
+    # ============================================================
+    # FINALIZE EXISTING PROACTIVE VIOLATION
+    # ============================================================
+    if (
+        active_checkout
+        and active_checkout.get('status') == 'violation'
+    ):
+        # Get the IDs saved by monitoring_service.py
+        disciplinary_record_id = active_checkout.get(
+            'disciplinary_record_id'
+        )
+        alert_id = active_checkout.get('alert_id')
+        proactive_exceeded = active_checkout.get(
+            'proactive_exceeded_minutes', 0
+        )
+
+        print(
+            f"🔍 PROACTIVE VIOLATION FOUND | "
+            f"Roll={roll_no} | "
+            f"ProactiveExceeded={proactive_exceeded:.2f} | "
+            f"FinalExceeded={final_exceeded_minutes:.2f} | "
+            f"DisciplinaryID={disciplinary_record_id} | "
+            f"AlertID={alert_id}"
+        )
+
+        # Update the SAME disciplinary record if ID exists
+        if disciplinary_record_id:
+            # Convert to ObjectId if it's a string
+            from bson import ObjectId
+            if isinstance(disciplinary_record_id, str):
+                disciplinary_record_id = ObjectId(disciplinary_record_id)
+            
+            update_doc = {
+                '$set': {
+                    'disciplinary_records.$.actual_duration_minutes':
+                        round(time_spent_minutes, 4),
+                    
+                    'disciplinary_records.$.final_exceeded_minutes':
+                        final_exceeded_minutes,
+                    
+                    'disciplinary_records.$.time_exceeded_minutes':
+                        final_exceeded_minutes,
+                    
+                    'disciplinary_records.$.violation_status':
+                        'confirmed',
+                    
+                    'disciplinary_records.$.in_time':
+                        now,
+                    
+                    'disciplinary_records.$.finalized_at':
+                        now,
+                    
+                    'disciplinary_records.$.proactive_exceeded_minutes':
+                        proactive_exceeded
+                }
+            }
+            
+            # Also add final note if not already there
+            final_note = (
+                f"Proactive detection: {proactive_exceeded:.2f} min exceeded. "
+                f"Final: {final_exceeded_minutes:.2f} min exceeded. "
+                f"Actual duration: {time_spent_minutes:.2f} min."
+            )
+            update_doc['$set']['disciplinary_records.$.final_note'] = final_note
+            
+            db.students.update_one(
+                {
+                    'roll_no': roll_no,
+                    'disciplinary_records._id': disciplinary_record_id
+                },
+                update_doc
+            )
+
+            print(
+                f"✅ PROACTIVE VIOLATION FINALIZED | "
+                f"Roll={roll_no} | "
+                f"Proactive={proactive_exceeded:.2f} | "
+                f"Final={final_exceeded_minutes:.2f} | "
+                f"Duration={time_spent_minutes:.2f} min"
+            )
+        else:
+            print(
+                f"⚠️ PROACTIVE VIOLATION FOUND BUT NO ID | "
+                f"Roll={roll_no} | "
+                f"Creating fallback record"
+            )
+            # Create fallback if no ID was saved
+            _create_fallback_disciplinary_record(
+                roll_no, out_time, now, max_allowed_time, 
+                time_spent_minutes, final_exceeded_minutes, 
+                user_role, is_offline_sync, db
+            )
+
+        # Update the realtime alert with final information if ID exists
+        if alert_id:
+            from bson import ObjectId
+            if isinstance(alert_id, str):
+                alert_id = ObjectId(alert_id)
+            
+            db.realtime_alerts.update_one(
+                {'_id': alert_id},
+                {
+                    '$set': {
+                        'details.actual_duration_minutes':
+                            round(time_spent_minutes, 4),
+                        
+                        'details.final_exceeded_minutes':
+                            final_exceeded_minutes,
+                        
+                        'details.violation_status':
+                            'confirmed',
+                        
+                        'details.in_time':
+                            now,
+                        
+                        'details.proactive_exceeded_minutes':
+                            proactive_exceeded,
+                        
+                        'finalized_at': now,
+                        
+                        'final_note': (
+                            f"Proactive: {proactive_exceeded:.2f} min. "
+                            f"Final: {final_exceeded_minutes:.2f} min."
+                        )
+                    }
+                }
+            )
+            
+            print(f"✅ ALERT UPDATED | AlertID={alert_id}")
+
+    # ============================================================
+    # STUDENT WAS WITHIN TIME LIMIT
+    # ============================================================
+    elif final_exceeded_minutes <= 0:
+        print(
+            f"✅ CHECK-IN WITHIN ALLOWED TIME | "
+            f"Roll={roll_no} | "
+            f"Duration={time_spent_minutes:.4f} min"
+        )
+
+    # ============================================================
+    # FALLBACK VIOLATION (Monitor didn't catch it)
+    # ============================================================
+    elif final_exceeded_minutes > 0:
+        print(
+            f"⚠️ FALLBACK VIOLATION | "
+            f"Roll={roll_no} | "
+            f"FinalExceeded={final_exceeded_minutes:.2f} min"
+        )
+        _create_fallback_disciplinary_record(
+            roll_no, out_time, now, max_allowed_time,
+            time_spent_minutes, final_exceeded_minutes,
+            user_role, is_offline_sync, db
+        )
+
+    # ============================================================
+    # NOW remove from active monitoring
+    # ============================================================
+    db.active_checkouts.delete_one(
+        {'roll_no': roll_no}
+    )
+
+    print(
+        f"✅ Active checkout removed after IN: {roll_no}"
+    )
     
     response_data = {
         'success': True,
@@ -220,43 +398,58 @@ def _process_check_in(student, roll_no, now, user_role, is_offline_sync, db):
         'time': now.isoformat(),
         'action': 'in',
         'time_spent_minutes': round(time_spent_minutes, 2),
-        'offline_sync': is_offline_sync
+        'offline_sync': is_offline_sync,
+        'allowed_time_minutes': max_allowed_time,
+        'time_exceeded_minutes': final_exceeded_minutes
     }
-    
-    # Create disciplinary record if time exceeded
-    if time_spent_minutes > max_allowed_time:
-        exceeded_minutes = round(time_spent_minutes - max_allowed_time, 2)
-        
-        disciplinary_record = {
-            'date': now,
-            'time': now.strftime('%H:%M'),
-            'description': (
-                f'Exceeded allowed time outside by {exceeded_minutes} minutes. '
-                f'Out at: {out_time.strftime("%Y-%m-%d %H:%M")}, '
-                f'In at: {now.strftime("%Y-%m-%d %H:%M")}, '
-                f'Allowed: {max_allowed_time} minutes'
-            ),
-            'action_taken': f'Warning issued for exceeding {max_allowed_time}-minute limit',
-            'recorded_by': user_role,
-            'recorded_at': now,
-            'time_exceeded_minutes': exceeded_minutes,
-            'auto_generated': True,
-            'offline_sync': is_offline_sync,
-            'allowed_time_limit': max_allowed_time
-        }
-        
-        db.students.update_one(
-            {'roll_no': roll_no},
-            {'$push': {'disciplinary_records': disciplinary_record}}
-        )
-        
-        response_data['message'] = 'Check in recorded. Time exceeded allowed limit!'
-        response_data['disciplinary_action'] = 'Warning issued'
-        response_data['time_exceeded_minutes'] = exceeded_minutes
     
     print(f"✅ CHECK-IN RECORDED | Roll={roll_no} | Duration={time_spent_minutes:.4f} min")
     
     return response_data, 200
+
+
+def _create_fallback_disciplinary_record(roll_no, out_time, now, max_allowed_time,
+                                         time_spent_minutes, final_exceeded_minutes,
+                                         user_role, is_offline_sync, db):
+    """
+    Create a fallback disciplinary record when proactive monitoring didn't catch it
+    """
+    from bson import ObjectId
+    
+    disciplinary_record_id = ObjectId()
+    
+    disciplinary_record = {
+        '_id': disciplinary_record_id,
+        'date': now,
+        'time': now.strftime('%H:%M'),
+        'description': (
+            f'Exceeded allowed time outside by '
+            f'{final_exceeded_minutes} minutes. '
+            f'Out at: {out_time.strftime("%Y-%m-%d %H:%M")}, '
+            f'In at: {now.strftime("%Y-%m-%d %H:%M")}, '
+            f'Allowed: {max_allowed_time} minutes'
+        ),
+        'action_taken': (
+            f'Warning issued for exceeding '
+            f'{max_allowed_time}-minute limit'
+        ),
+        'recorded_by': user_role,
+        'recorded_at': now,
+        'time_exceeded_minutes': final_exceeded_minutes,
+        'final_exceeded_minutes': final_exceeded_minutes,
+        'actual_duration_minutes': round(time_spent_minutes, 4),
+        'violation_status': 'confirmed',
+        'auto_generated': True,
+        'offline_sync': is_offline_sync,
+        'allowed_time_limit': max_allowed_time,
+        'finalized_at': now,
+        'detection_method': 'fallback_on_checkin'
+    }
+    
+    db.students.update_one(
+        {'roll_no': roll_no},
+        {'$push': {'disciplinary_records': disciplinary_record}}
+    )
 
 
 # Keep the original function name for backward compatibility

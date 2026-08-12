@@ -9,3 +9,5 @@ Werkzeug==2.3.7
 python-dateutil==2.8.2
 gunicorn
 dnspython
+python-dotenv
+firebase-admin

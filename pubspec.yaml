@@ -36,6 +36,8 @@ dependencies:
   open_filex: ^4.0.0
   # ADD THIS FOR PROFILE PHOTO FEATURE:
   image_picker: ^1.0.4
+  firebase_core: ^4.13.0
+  firebase_messaging: ^16.5.0
 
 dev_dependencies:
   flutter_test:

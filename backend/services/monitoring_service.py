@@ -5,6 +5,7 @@ Monitoring Service - Proactive monitoring of student checkouts
 
 from datetime import datetime, timedelta, timezone
 from bson import ObjectId
+from services.notification_service import send_hostel_alert
 
 # Import utils
 import sys
@@ -185,7 +186,23 @@ def _check_single_checkout(checkout, now_utc, db):
         roll_no, checkout, out_time_utc, allowed_minutes, 
         exceeded_minutes, now_utc, db
     )
-    
+
+    # ============================================================
+    # SEND HOSTEL-SPECIFIC FCM NOTIFICATION
+    # ============================================================
+    try:
+        send_hostel_alert(
+            hostel=checkout.get('student_hostel'),
+            roll_no=roll_no,
+            student_name=checkout.get('student_name', 'Unknown'),
+            exceeded_minutes=exceeded_minutes
+        )
+    except Exception as e:
+        print(
+            f"❌ FCM notification failed for {roll_no}: "
+            f"{type(e).__name__}: {e}"
+        )
+        
     # ============================================================
     # STORE IDs IN ACTIVE CHECKOUT FOR FINALIZATION
     # ============================================================

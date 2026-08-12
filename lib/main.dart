@@ -8,6 +8,11 @@ import 'theme_provider.dart';
 import 'app_themes.dart';
 import 'sync_service.dart'; // ⭐ ADD THIS IMPORT
 
+// Firebase
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
+import 'notification_service.dart';
+
 // Notifications
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:open_filex/open_filex.dart';
@@ -18,6 +23,11 @@ final FlutterLocalNotificationsPlugin notificationPlugin =
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 🔥 Initialize Firebase
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
 
   // 🔔 Initialize local notifications
   const AndroidInitializationSettings androidInit =
@@ -36,6 +46,11 @@ Future<void> main() async {
     },
   );
 
+  // 🔥 Initialize Firebase Cloud Messaging
+  await NotificationService.initialize(notificationPlugin);
+  
+  await NotificationService.subscribeToSupervisorHostel('A');
+  
   await BiometricAuthService.init();
 
   runApp(const MyApp());

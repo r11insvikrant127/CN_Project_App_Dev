@@ -6,6 +6,8 @@ Monitoring Service - Proactive monitoring of student checkouts
 from datetime import datetime, timedelta, timezone
 from bson import ObjectId
 from services.notification_service import send_hostel_alert
+from services.websocket_service import emit_violation_alert
+from services.websocket_service import socketio
 
 # Import utils
 import sys
@@ -194,6 +196,39 @@ def _check_single_checkout(checkout, now_utc, db):
     )
 
     # ============================================================
+    # SEND REAL-TIME WEBSOCKET ALERT
+    # ============================================================
+    try:
+        socketio.emit(
+            'allowed_time_violation',
+            {
+                'type': 'allowed_time_violation',
+                'roll_no': str(roll_no),
+                'student_name': checkout.get('student_name', 'Unknown'),
+                'hostel': checkout.get('student_hostel', 'Unknown'),
+                'out_time': out_time_utc.isoformat(),
+                'deadline': checkout.get('deadline').isoformat()
+                    if checkout.get('deadline') else None,
+                'allowed_minutes': allowed_minutes,
+                'exceeded_minutes': exceeded_minutes,
+                'alert_id': str(alert_id) if alert_id else None,
+                'timestamp': now_utc.isoformat(),
+            }
+        )
+
+        print(
+            f"⚡ WEBSOCKET ALERT SENT | "
+            f"Roll={roll_no} | "
+            f"Event=allowed_time_violation"
+        )
+
+    except Exception as e:
+        print(
+            f"❌ WebSocket alert failed for {roll_no}: "
+            f"{type(e).__name__}: {e}"
+        )
+
+    # ============================================================
     # SEND HOSTEL-SPECIFIC FCM NOTIFICATION
     # ============================================================
     try:
@@ -209,6 +244,32 @@ def _check_single_checkout(checkout, now_utc, db):
             f"{type(e).__name__}: {e}"
         )
         
+    # ============================================================
+    # SEND REAL-TIME WEBSOCKET ALERT
+    # ============================================================
+    try:
+        emit_violation_alert({
+            'type': 'allowed_time_violation',
+            'roll_no': str(roll_no),
+            'student_name': str(
+                checkout.get('student_name', 'Unknown')
+            ),
+            'hostel': str(
+                checkout.get('student_hostel', 'Unknown')
+            ),
+            'out_time': str(out_time_utc),
+            'allowed_minutes': allowed_minutes,
+            'deadline': str(checkout.get('deadline')),
+            'exceeded_minutes': exceeded_minutes,
+            'priority': 'high',
+        })
+    except Exception as e:
+        print(
+            f"❌ WebSocket notification failed for {roll_no}: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
     # ============================================================
     # STORE IDs IN ACTIVE CHECKOUT FOR FINALIZATION
     # ============================================================

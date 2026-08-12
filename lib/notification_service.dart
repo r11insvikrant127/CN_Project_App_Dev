@@ -3,11 +3,12 @@
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:socket_io_client/socket_io_client.dart' as IO;
 
 class NotificationService {
   static final FirebaseMessaging _messaging =
       FirebaseMessaging.instance;
-
+  static IO.Socket? _socket;
   /// Initialize Firebase Cloud Messaging.
   static Future<void> initialize(
     FlutterLocalNotificationsPlugin localNotifications,
@@ -95,6 +96,50 @@ class NotificationService {
       print('🚀 App opened from FCM notification');
       print('Data: ${initialMessage.data}');
     }
+    // 🔌 Initialize Socket.IO for real-time alerts
+    await initializeWebSocket();
+  }
+
+   /// Initialize Socket.IO for real-time alerts
+  static Future<void> initializeWebSocket() async {
+    if (_socket != null && _socket!.connected) {
+      print('🔌 WebSocket already connected');
+      return;
+    }
+
+    _socket = IO.io(
+      'https://cn-project-app-dev.onrender.com',
+      IO.OptionBuilder()
+          .setTransports(['websocket'])
+          .disableAutoConnect()
+          .enableReconnection()
+          .setReconnectionAttempts(10)
+          .setReconnectionDelay(2000)
+          .build(),
+    );
+
+    _socket!.onConnect((_) {
+      print('🟢 WebSocket CONNECTED');
+    });
+
+    _socket!.onDisconnect((reason) {
+      print('🔴 WebSocket DISCONNECTED | Reason=$reason');
+    });
+
+    _socket!.onConnectError((error) {
+      print('❌ WebSocket connection error: $error');
+    });
+
+    _socket!.onError((error) {
+      print('❌ WebSocket error: $error');
+    });
+
+    _socket!.on('violation_alert', (data) {
+      print('🚨 WEBSOCKET VIOLATION ALERT RECEIVED');
+      print('Data: $data');
+    });
+
+    _socket!.connect();
   }
 
   /// Subscribe this device to the notification topic

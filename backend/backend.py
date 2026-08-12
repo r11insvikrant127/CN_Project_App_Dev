@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, make_response
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from services.websocket_service import socketio
 from bson import ObjectId
 from functools import wraps
 import os
@@ -77,7 +78,7 @@ app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-ke
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)
 MONITORING_SECRET = os.environ.get("MONITORING_SECRET")
 app.json_encoder = CustomJSONEncoder
-
+socketio.init_app(app)
 
 MONGO_URL = os.environ.get(
     "MONGO_URL",

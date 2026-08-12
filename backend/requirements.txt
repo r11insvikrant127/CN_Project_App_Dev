@@ -11,3 +11,4 @@ gunicorn
 dnspython
 python-dotenv
 firebase-admin
+Flask-SocketIO==5.3.6

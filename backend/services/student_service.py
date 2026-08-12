@@ -4,7 +4,7 @@ Student Service - Handles all student-related operations
 Extracted from backend.py for better maintainability
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, date, timedelta, timezone
 from bson import ObjectId
 from utils.time_utils import INDIA_TZ, get_ist_now, normalize_datetime_to_ist
 from utils.db_utils import get_db

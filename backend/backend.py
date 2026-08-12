@@ -18,6 +18,42 @@ import uuid
 from pymongo import MongoClient
 import certifi
 
+# ============================================================
+# NEW IMPORTS FOR MODULARITY - ADD THESE
+# ============================================================
+from services.movement_service import process_security_scan
+from services.monitoring_service import monitor_active_checkouts, create_active_checkout
+from utils.time_utils import INDIA_TZ, get_ist_now, normalize_datetime_to_ist
+from utils.db_utils import set_db, set_client, get_db
+# ============================================================
+# ============================================================
+# NEW IMPORTS FOR STUDENT & ANALYTICS SERVICES - ADD THESE
+# ============================================================
+from services.student_service import (
+    get_student_with_role,
+    search_students,
+    get_students_by_hostel,
+    validate_student_offline,
+    get_student_allowed_time,
+    update_student_allowed_time,
+    reset_student_allowed_time,
+    get_all_students_minimal,
+    get_student_counts,
+    get_active_students_outside,
+    get_student_movement_history
+)
+from services.analytics_service import (
+    get_unauthorized_visits_analytics,
+    get_monthly_unauthorized_visits,
+    get_late_arrivals_analytics,
+    calculate_weekly_late_arrivals,
+    get_visit_trends,
+    get_predictive_insights,
+    submit_weekly_canteen_report,
+    get_late_arrivals_reports
+)
+# ============================================================
+
 # India timezone (UTC+5:30)
 INDIA_TZ = timezone(timedelta(hours=5, minutes=30))
 
@@ -259,371 +295,25 @@ def initialize_database():
     except Exception as e:
         print(f"❌ Database initialization error: {e}")
 
+# ============================================================
+# ADD THIS - Set db in utils after initialization
+# ============================================================
 # Initialize database when app starts ONLY if connected
 if db_connected:
+    set_db(db)
+    set_client(client)
     initialize_database()
 else:
     print("⚠️ Skipping database initialization - no connection")
+# ============================================================
+
+# ============================================================
+# DELETE THESE FUNCTIONS (they're now in services/)
+# - create_active_checkout()
+# - monitor_active_checkouts()
+# They have been moved to services/monitoring_service.py
+# ============================================================
 
-def create_active_checkout(
-    roll_no,
-    student,
-    out_time,
-    user_role,
-    offline_sync=False
-):
-    """
-    Create/update an active checkout record for proactive
-    allowed-time monitoring.
-
-    This does NOT replace students.in_out_records.
-    It only stores currently active OUT sessions.
-    """
-    try:
-        if db is None:
-            print("⚠️ Cannot create active checkout - database unavailable")
-            return None
-
-        # Get student's custom allowed time.
-        # If no custom value exists, use 480 minutes (8 hours).
-        allowed_minutes = float(
-            student.get('custom_allowed_time_minutes', 480)
-        )
-
-        # Calculate exact deadline.
-        deadline = out_time + timedelta(
-            minutes=allowed_minutes
-        )
-
-        active_checkout = {
-            'roll_no': roll_no,
-            'student_name': student.get('name', 'Unknown'),
-            'student_hostel': student.get('hostel', 'Unknown'),
-
-            'out_time': out_time,
-            'allowed_minutes': allowed_minutes,
-            'deadline': deadline,
-
-            'status': 'active',
-            'alert_sent': False,
-
-            'recorded_by': user_role,
-            'offline_sync': offline_sync,
-            'created_at': datetime.now(INDIA_TZ),
-            'updated_at': datetime.now(INDIA_TZ)
-        }
-
-        db.active_checkouts.update_one(
-            {'roll_no': roll_no},
-            {'$set': active_checkout},
-            upsert=True
-        )
-
-        print(
-            f"⏱️ ACTIVE CHECKOUT CREATED | "
-            f"Roll: {roll_no} | "
-            f"Out: {out_time} | "
-            f"Allowed: {allowed_minutes} min | "
-            f"Deadline: {deadline}"
-        )
-
-        return active_checkout
-
-    except Exception as e:
-        print(
-            f"❌ Error creating active checkout "
-            f"for {roll_no}: {e}"
-        )
-        return None
-
-
-def monitor_active_checkouts():
-    """
-    Proactively monitor students who are currently outside.
-
-    If the allowed deadline has passed:
-    1. Mark the checkout as a violation.
-    2. Create a disciplinary record.
-    3. Create a realtime alert.
-    """
-
-    try:
-        print(
-            f"🔄 ACTIVE CHECKOUT MONITOR RUNNING | "
-            f"{datetime.now(INDIA_TZ)}"
-        )
-
-        if db is None:
-            print("⚠️ Monitoring skipped - database unavailable")
-            return
-
-        # MongoDB stores datetime values as UTC.
-        # Use naive UTC here so comparison is consistent.
-        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-
-        print(
-            f"🕒 MONITOR TIME | "
-            f"UTC={now_utc} | "
-            f"IST={datetime.now(INDIA_TZ)}"
-        )
-
-        # Get every currently active checkout.
-        active_checkouts = list(
-            db.active_checkouts.find({
-                'status': 'active'
-            })
-        )
-
-        print(
-            f"📊 TOTAL ACTIVE CHECKOUTS: "
-            f"{len(active_checkouts)}"
-        )
-
-        if not active_checkouts:
-            print("ℹ️ No students currently outside.")
-            return
-
-        # Check each active checkout individually.
-        for checkout in active_checkouts:
-
-            roll_no = checkout.get('roll_no')
-            deadline = checkout.get('deadline')
-            out_time = checkout.get('out_time')
-            allowed_minutes = float(
-                checkout.get('allowed_minutes', 480)
-            )
-
-            print(
-                f"👤 CHECKING | "
-                f"Roll={roll_no} | "
-                f"Deadline={deadline} | "
-                f"Now={now_utc} | "
-                f"Allowed={allowed_minutes} min"
-            )
-
-            if deadline is None:
-                print(
-                    f"⚠️ No deadline found for {roll_no}. "
-                    f"Skipping."
-                )
-                continue
-
-            # MongoDB returns datetime as naive UTC in this setup.
-            # Normalize explicitly just in case.
-            if deadline.tzinfo is not None:
-                deadline_utc = (
-                    deadline
-                    .astimezone(timezone.utc)
-                    .replace(tzinfo=None)
-                )
-            else:
-                deadline_utc = deadline
-
-            print(
-                f"   ⏱️ Deadline comparison | "
-                f"now={now_utc} | "
-                f"deadline={deadline_utc} | "
-                f"expired={now_utc >= deadline_utc}"
-            )
-
-            # Student has NOT exceeded allowed time yet.
-            if now_utc < deadline_utc:
-                remaining_seconds = (
-                    deadline_utc - now_utc
-                ).total_seconds()
-
-                print(
-                    f"   ✅ Still within allowed time | "
-                    f"Remaining={round(remaining_seconds, 1)} sec"
-                )
-                continue
-
-            # -------------------------------------------------
-            # DEADLINE EXCEEDED
-            # -------------------------------------------------
-
-            print(
-                f"🚨 DEADLINE EXCEEDED | "
-                f"Student={roll_no}"
-            )
-
-            # Atomically claim the violation.
-            # This prevents duplicate processing.
-            claim_result = db.active_checkouts.update_one(
-                {
-                    '_id': checkout['_id'],
-                    'status': 'active',
-                    'alert_sent': False
-                },
-                {
-                    '$set': {
-                        'status': 'violation',
-                        'alert_sent': True,
-                        'alert_sent_at': now_utc,
-                        'updated_at': now_utc
-                    }
-                }
-            )
-
-            if claim_result.modified_count != 1:
-                print(
-                    f"⚠️ Violation already processed for "
-                    f"{roll_no}. Skipping."
-                )
-                continue
-
-            # Normalize out_time for calculation.
-            if out_time is None:
-                print(
-                    f"⚠️ No out_time found for {roll_no}. "
-                    f"Skipping disciplinary calculation."
-                )
-                continue
-
-            if out_time.tzinfo is not None:
-                out_time_utc = (
-                    out_time
-                    .astimezone(timezone.utc)
-                    .replace(tzinfo=None)
-                )
-            else:
-                out_time_utc = out_time
-
-            # Calculate exact exceeded time.
-            actual_minutes = (
-                now_utc - out_time_utc
-            ).total_seconds() / 60
-
-            exceeded_minutes = max(
-                0,
-                round(
-                    actual_minutes - allowed_minutes,
-                    2
-                )
-            )
-
-            print(
-                f"⏰ TIME VIOLATION | "
-                f"Roll={roll_no} | "
-                f"Actual={round(actual_minutes, 2)} min | "
-                f"Allowed={allowed_minutes} min | "
-                f"Exceeded={exceeded_minutes} min"
-            )
-
-            # -------------------------------------------------
-            # 1. CREATE DISCIPLINARY RECORD
-            # -------------------------------------------------
-
-            disciplinary_record = {
-                'date': now_utc,
-                'time': datetime.now(
-                    INDIA_TZ
-                ).strftime('%H:%M'),
-
-                'description': (
-                    f'Exceeded allowed time outside by '
-                    f'{exceeded_minutes} minutes. '
-                    f'Out at: '
-                    f'{out_time_utc.strftime("%Y-%m-%d %H:%M")}, '
-                    f'Allowed: {allowed_minutes} minutes'
-                ),
-
-                'action_taken': (
-                    f'Warning issued for exceeding '
-                    f'{allowed_minutes}-minute limit'
-                ),
-
-                'recorded_by': 'system_monitor',
-                'recorded_at': now_utc,
-
-                'time_exceeded_minutes': exceeded_minutes,
-
-                'auto_generated': True,
-                'proactive_monitoring': True,
-
-                'allowed_time_limit': allowed_minutes
-            }
-
-            disciplinary_result = db.students.update_one(
-                {'roll_no': roll_no},
-                {
-                    '$push': {
-                        'disciplinary_records':
-                            disciplinary_record
-                    }
-                }
-            )
-
-            print(
-                f"📝 DISCIPLINARY RECORD CREATED | "
-                f"Roll={roll_no} | "
-                f"Modified={disciplinary_result.modified_count}"
-            )
-
-            # -------------------------------------------------
-            # 2. CREATE REALTIME ALERT
-            # -------------------------------------------------
-
-            alert_message = {
-                'type': 'allowed_time_violation',
-
-                'message': (
-                    f'🚨 Student {roll_no} exceeded '
-                    f'allowed time outside'
-                ),
-
-                'details': {
-                    'roll_no': roll_no,
-
-                    'student_name': checkout.get(
-                        'student_name',
-                        'Unknown'
-                    ),
-
-                    'student_hostel': checkout.get(
-                        'student_hostel',
-                        'Unknown'
-                    ),
-
-                    'out_time': out_time_utc,
-
-                    'allowed_minutes': allowed_minutes,
-
-                    'deadline': deadline_utc,
-
-                    'exceeded_minutes': exceeded_minutes
-                },
-
-                'timestamp': now_utc,
-
-                'priority': 'high',
-
-                'auto_generated': True,
-
-                'proactive_monitoring': True
-            }
-
-            alert_result = db.realtime_alerts.insert_one(
-                alert_message
-            )
-
-            print(
-                f"🔔 REALTIME ALERT CREATED | "
-                f"Roll={roll_no} | "
-                f"AlertID={alert_result.inserted_id}"
-            )
-
-            print(
-                f"🚨 PROACTIVE VIOLATION COMPLETE | "
-                f"Student={roll_no} | "
-                f"Exceeded={exceeded_minutes} min"
-            )
-
-    except Exception as e:
-        print(
-            f"❌ ERROR IN ACTIVE CHECKOUT MONITORING | "
-            f"{type(e).__name__}: {e}"
-        )
 @app.route('/api/internal/monitor-active-checkouts', methods=['POST'])
 @limiter.exempt
 def trigger_active_checkout_monitor():
@@ -1286,124 +976,25 @@ def get_test_data():
 
 @app.route('/api/student/<roll_no>/<selected_role>', methods=['GET'])
 @jwt_required()
-def get_student_with_role(roll_no, selected_role):
+def get_student_with_role_endpoint(roll_no, selected_role):
     try:
         identity_string = get_jwt_identity()
         if ':' in identity_string:
             device_id, user_role = identity_string.split(':', 1)
-            user_hostel = user_role.split('_')[1].upper() if '_' in user_role else 'ALL'
         else:
             return jsonify({'message': 'Invalid token format'}), 401
         
-        print(f"👤 User: {user_role}, Requested role: {selected_role}")
+        # Use the student service
+        result, status_code = get_student_with_role(roll_no, user_role, selected_role)
+        return jsonify(result), status_code
         
-        if user_role != selected_role:
-            return jsonify({'message': 'Role mismatch'}), 403
-        
-        student = db.students.find_one({'roll_no': roll_no})
-        
-        if not student:
-            return jsonify({'message': 'Student not found'}), 404
-        
-        # Check hostel access for non-admin roles
-        if user_role != 'admin' and '_' in user_role:
-            role_part, hostel_letter = user_role.split('_')
-            user_hostel = hostel_letter.upper()
-            
-            if student.get('hostel') != user_hostel:
-                return jsonify({
-                    'message': 'This student does not belong to your hostel',
-                    'student_hostel': student.get('hostel'),
-                    'user_hostel': user_hostel,
-                    'access_denied': True
-                }), 403
-        
-        # Convert MongoDB objects to JSON-serializable format
-        # ✅ FIX: Ensure all datetime objects are properly serialized to IST
-        def serialize_dates(obj):
-            if isinstance(obj, (datetime, date)):
-                # Convert to IST before serialization
-                if obj.tzinfo is None:
-                    obj = obj.replace(tzinfo=timezone.utc)
-                obj_ist = obj.astimezone(INDIA_TZ)
-                return obj_ist.isoformat()
-            elif isinstance(obj, ObjectId):
-                return str(obj)
-            return obj
-        
-        print("🔍 MOVEMENT RECORDS DEBUG - Before sending to frontend:")
-        in_out_records = student.get('in_out_records', [])
-        print(f"📊 Total records to send: {len(in_out_records)}")
-        for i, record in enumerate(in_out_records[:3]):
-            print(f"  Record {i}:")
-            print(f"    Action: {record.get('action')}")
-            print(f"    Out Time: {record.get('out_time')} (type: {type(record.get('out_time'))})")
-            print(f"    In Time: {record.get('in_time')} (type: {type(record.get('in_time'))})")
-            # Check if it's a datetime object
-            if hasattr(record.get('out_time'), 'isoformat'):
-                print(f"    Out Time ISO: {record.get('out_time').isoformat()}")
-            if hasattr(record.get('in_time'), 'isoformat'):
-                print(f"    In Time ISO: {record.get('in_time').isoformat()}")
-        
-        # ADMIN: Can access all data
-        if user_role == 'admin':
-            student_data = {
-                'roll_no': student['roll_no'],
-                'name': student['name'],
-                'hostel': student['hostel'],
-                'room_no': student['room_no'],
-                'course': student['course'],
-                'academic_year': student['academic_year'],
-                'branch': student['branch'],
-                'contact_no': student['contact_no'],
-                'email': student['email'],
-                'guardian_name': student['guardian_name'],
-                'guardian_phone': student['guardian_phone'],
-                'home_address': student['home_address'],
-                'fee_status': student['fee_status'],
-                'admission_date': serialize_dates(student['admission_date']),
-                'in_out_records': [serialize_dates(record) for record in student.get('in_out_records', [])],
-                'disciplinary_records': [serialize_dates(record) for record in student.get('disciplinary_records', [])],
-                'medical_info': student.get('medical_info', [])
-            }
-            return jsonify(student_data), 200
-        
-        # SUPER: Can access in_out_records and medical_info for their hostel
-        if user_role.startswith('super_'):
-            student_data = {
-                'roll_no': student['roll_no'],
-                'name': student['name'],
-                'hostel': student['hostel'],
-                'room_no': student['room_no'],
-                'course': student['course'],
-                'academic_year': student['academic_year'],
-                'branch': student['branch'],
-                'contact_no': student['contact_no'],
-                'in_out_records': [serialize_dates(record) for record in student.get('in_out_records', [])],
-                'medical_info': student.get('medical_info', []),
-                'disciplinary_records': [serialize_dates(record) for record in student.get('disciplinary_records', [])]
-            }
-            return jsonify(student_data), 200
-        
-        # SECURITY & CANTEEN: Basic info only with hostel verification
-        if user_role.startswith('security_') or user_role.startswith('canteen_'):
-            student_data = {
-                'roll_no': student['roll_no'],
-                'name': student['name'],
-                'hostel': student['hostel'],
-                'room_no': student.get('room_no'),
-                'course': student.get('course'),
-                'branch': student.get('branch'),
-                'belongs_to_hostel': student.get('hostel') == user_hostel
-            }
-            return jsonify(student_data), 200
-        
-        return jsonify({'message': 'Invalid role'}), 400
-            
     except Exception as e:
         print(f"❌ Error in get_student_with_role: {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
 
+# ============================================================
+# REPLACED: Simplified security scan endpoint using service
+# ============================================================
 @app.route('/api/student/scan/security/<selected_role>', methods=['POST'])
 @jwt_required()
 def handle_security_scan(selected_role):
@@ -1411,7 +1002,6 @@ def handle_security_scan(selected_role):
         identity_string = get_jwt_identity()
         if ':' in identity_string:
             device_id, user_role = identity_string.split(':', 1)
-            user_hostel = user_role.split('_')[1].upper() if '_' in user_role else 'ALL'
         else:
             return jsonify({'message': 'Invalid token format'}), 401
         
@@ -1419,366 +1009,15 @@ def handle_security_scan(selected_role):
             return jsonify({'message': 'Role mismatch'}), 403
         
         data = request.get_json()
-        roll_no = data.get('roll_no')
-        action = data.get('action')  # 'in' or 'out'
-        is_offline_sync = data.get('offline_sync', False)
-        original_timestamp = data.get('original_timestamp')
         
-        # ✅ FIX: Ensure all datetime objects are timezone-aware
-        # FIXED:
-        if is_offline_sync and original_timestamp:
-            # Convert UTC timestamp to IST properly
-            utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
-            now = utc_time.astimezone(INDIA_TZ)
-            print(f"🔄 Processing offline sync: {roll_no}, {action}, original time: {now}")
-        else:
-            now = datetime.now(INDIA_TZ)  # This is already timezone-aware
-        
-        student = db.students.find_one({'roll_no': roll_no})
-        
-        if not student:
-            return jsonify({'message': 'Student not found'}), 404
-        
-        # Check hostel access
-        # ✅ FIX: Allow OUT scans from any hostel, only restrict IN scans
-        if '_' in user_role:
-            role_part, hostel_letter = user_role.split('_')
-            required_hostel = hostel_letter.upper()
-            
-            # ONLY restrict for IN action, allow OUT from any hostel
-            if action == 'in' and student.get('hostel') != required_hostel:
-                return jsonify({
-                    'message': 'This student does not belong to your hostel',
-                    'student_hostel': student.get('hostel'),
-                    'user_hostel': required_hostel,
-                    'access_denied': True
-                }), 403
-        
-        # In the OUT action block, replace with:
-        if action == 'out':
-            # Check if student is already out
-            current_out_record = None
-            for record in reversed(student.get('in_out_records', [])):
-                if record.get('action') == 'out' and record.get('in_time') is None:
-                    current_out_record = record
-                    break
-            
-            if current_out_record:
-                return jsonify({
-                    'message': 'Student is already checked out',
-                    'out_time': current_out_record['out_time'].strftime('%Y-%m-%d %H:%M:%S')
-                }), 400
-            
-            # ✅ FIX: Always create OUT record with proper structure
-            out_record = {
-                'out_time': now,
-                'in_time': None,
-                'action': 'out',  # ✅ CRITICAL: This must be 'out'
-                'recorded_by': user_role,
-                'recorded_at': now,
-                'status': 'outside',
-                'offline_sync': is_offline_sync
-            }
-            
-            db.students.update_one(
-                {'roll_no': roll_no},
-                {'$push': {'in_out_records': out_record}}
-            )
-
-            # Create active checkout for proactive monitoring
-            create_active_checkout(
-                roll_no=roll_no,
-                student=student,
-                out_time=now,
-                user_role=user_role,
-                offline_sync=is_offline_sync
-            )
-
-            print(f"✅ OUT record created: {roll_no} at {now}")
-
-            return jsonify({
-                'message': 'Check out recorded successfully',
-                'student_name': student.get('name', 'Unknown'),
-                'roll_no': roll_no,
-                'time': now.strftime('%Y-%m-%d %H:%M:%S'),
-                'action': 'out',
-                'offline_sync': is_offline_sync
-            }), 200
-            
-        elif action == 'in':
-            # Find the latest active OUT record AND remember its exact index.
-            # Using the index prevents MongoDB from accidentally updating
-            # another record having the same/similar out_time.
-            records = student.get('in_out_records', [])
-
-            latest_out_record = None
-            latest_out_index = None
-            records = student.get('in_out_records', [])
-            for i in range(len(records) - 1, -1, -1):
-                record = records[i]
-
-                if (
-                    record.get('action') == 'out'
-                    and record.get('in_time') is None
-                ):
-                    latest_out_record = record
-                    latest_out_index = i
-                    break
-
-            if latest_out_record is None:
-                return jsonify({
-                    'message': 'No active check out record found'
-                }), 400
-
-            # ---------------------------------------------------------
-            # NORMALIZE OUT TIME
-            # ---------------------------------------------------------
-
-            raw_out_time = latest_out_record.get('out_time')
-
-            if raw_out_time is None:
-                return jsonify({
-                    'message': 'Invalid OUT record: out_time is missing'
-                }), 500
-
-            try:
-                if isinstance(raw_out_time, str):
-                    out_time = datetime.fromisoformat(
-                        raw_out_time.replace('Z', '+00:00')
-                    )
-                else:
-                    out_time = raw_out_time
-
-                # MongoDB normally returns naive UTC datetimes.
-                if out_time.tzinfo is None:
-                    out_time = out_time.replace(
-                        tzinfo=timezone.utc
-                    )
-
-                # Convert to IST for display/calculation.
-                out_time = out_time.astimezone(INDIA_TZ)
-
-            except Exception as e:
-                print(f"❌ Error normalizing OUT time: {e}")
-
-                return jsonify({
-                    'message': 'Invalid OUT timestamp'
-                }), 500
-
-            # ---------------------------------------------------------
-            # GET IN TIME
-            # ---------------------------------------------------------
-
-            if is_offline_sync and original_timestamp:
-                utc_time = datetime.fromtimestamp(
-                    original_timestamp / 1000,
-                    tz=timezone.utc
-                )
-                now = utc_time.astimezone(INDIA_TZ)
-            else:
-                now = datetime.now(INDIA_TZ)
-
-            # ---------------------------------------------------------
-            # SAFETY: NEVER ALLOW IN TIME BEFORE OUT TIME
-            # ---------------------------------------------------------
-
-            if now < out_time:
-                print(
-                    "⚠️ INVALID OFFLINE TIMESTAMP | "
-                    f"Roll={roll_no} | "
-                    f"OUT={out_time} | "
-                    f"IN={now} | "
-                    "Using current server time for IN."
-                )
-
-                # The mobile device supplied an invalid/stale timestamp.
-                # Use server time instead so duration can never be negative.
-                now = datetime.now(INDIA_TZ)
-
-            print("🔍 DEBUG TIME CALCULATION")
-            print(f"   Roll No : {roll_no}")
-            print(f"   OUT     : {out_time}")
-            print(f"   IN      : {now}")
-            print(f"   OUT index: {latest_out_index}")
-
-            # ---------------------------------------------------------
-            # CRITICAL SAFETY CHECK
-            # ---------------------------------------------------------
-
-            time_spent = (
-                now - out_time
-            ).total_seconds() / 60
-
-            print(
-                f"🔍 Calculated time spent: "
-                f"{time_spent:.4f} minutes"
-            )
-
-            # NEVER store a negative duration.
-            if time_spent < 0:
-
-                print(
-                    "❌ INVALID MOVEMENT ORDER | "
-                    f"Roll={roll_no} | "
-                    f"OUT={out_time} | "
-                    f"IN={now} | "
-                    f"Difference={time_spent:.4f} min"
-                )
-
-                return jsonify({
-                    'success': False,
-                    'message': (
-                        'Invalid scan time: '
-                        'IN time is earlier than OUT time.'
-                    ),
-                    'out_time': out_time.isoformat(),
-                    'in_time': now.isoformat(),
-                    'time_spent_minutes': round(time_spent, 2),
-                    'offline_sync': is_offline_sync
-                }), 400
-
-            # ---------------------------------------------------------
-            # UPDATE THE EXACT RECORD WE FOUND
-            # ---------------------------------------------------------
-
-            update_result = db.students.update_one(
-                {'roll_no': roll_no},
-                {
-                    '$set': {
-                        f'in_out_records.{latest_out_index}.in_time': now,
-                        f'in_out_records.{latest_out_index}.time_spent_minutes': round(
-                            time_spent, 4
-                        ),
-                        f'in_out_records.{latest_out_index}.action': 'in',
-                        f'in_out_records.{latest_out_index}.status': 'inside',
-                        f'in_out_records.{latest_out_index}.offline_sync': is_offline_sync
-                    }
-                }
-            )
-
-            if update_result.modified_count != 1:
-                print(
-                    f"❌ Failed to update movement record "
-                    f"for {roll_no}"
-                )
-
-                return jsonify({
-                    'message': 'Failed to update check-in record'
-                }), 500
-
-            # ---------------------------------------------------------
-            # REMOVE FROM ACTIVE CHECKOUT MONITORING
-            # ---------------------------------------------------------
-
-            db.active_checkouts.delete_one({
-                'roll_no': roll_no
-            })
-
-            print(
-                f"✅ Active checkout removed after IN: {roll_no}"
-            )
-
-            # ---------------------------------------------------------
-            # ALLOWED TIME CHECK
-            # ---------------------------------------------------------
-
-            max_allowed_time = float(
-                student.get(
-                    'custom_allowed_time_minutes',
-                    480
-                )
-            )
-
-            response_data = {
-                'success': True,
-                'message': 'Check in recorded successfully',
-                'student_name': student.get(
-                    'name',
-                    'Unknown'
-                ),
-                'roll_no': roll_no,
-                'time': now.isoformat(),
-                'action': 'in',
-                'time_spent_minutes': round(
-                    time_spent,
-                    2
-                ),
-                'offline_sync': is_offline_sync
-            }
-
-            # ---------------------------------------------------------
-            # DISCIPLINARY RECORD
-            # ---------------------------------------------------------
-
-            if time_spent > max_allowed_time:
-
-                exceeded_minutes = round(
-                    time_spent - max_allowed_time,
-                    2
-                )
-
-                disciplinary_record = {
-                    'date': now,
-                    'time': now.strftime('%H:%M'),
-                    'description': (
-                        f'Exceeded allowed time outside by '
-                        f'{exceeded_minutes} minutes. '
-                        f'Out at: '
-                        f'{out_time.strftime("%Y-%m-%d %H:%M")}, '
-                        f'In at: '
-                        f'{now.strftime("%Y-%m-%d %H:%M")}, '
-                        f'Allowed: {max_allowed_time} minutes'
-                    ),
-                    'action_taken': (
-                        f'Warning issued for exceeding '
-                        f'{max_allowed_time}-minute limit'
-                    ),
-                    'recorded_by': user_role,
-                    'recorded_at': now,
-                    'time_exceeded_minutes': exceeded_minutes,
-                    'auto_generated': True,
-                    'offline_sync': is_offline_sync,
-                    'allowed_time_limit': max_allowed_time
-                }
-
-                db.students.update_one(
-                    {'roll_no': roll_no},
-                    {
-                        '$push': {
-                            'disciplinary_records':
-                                disciplinary_record
-                        }
-                    }
-                )
-
-                response_data['message'] = (
-                    'Check in recorded. '
-                    'Time exceeded allowed limit!'
-                )
-
-                response_data['disciplinary_action'] = (
-                    'Warning issued'
-                )
-
-                response_data['time_exceeded_minutes'] = (
-                    exceeded_minutes
-                )
-
-            print(
-                f"✅ CHECK-IN RECORDED | "
-                f"Roll={roll_no} | "
-                f"OUT={out_time} | "
-                f"IN={now} | "
-                f"Duration={time_spent:.4f} min"
-            )
-
-            return jsonify(response_data), 200
-        
-        return jsonify({'message': 'Invalid action'}), 400
+        # Use the movement service
+        result, status_code = process_security_scan(user_role, data)
+        return jsonify(result), status_code
         
     except Exception as e:
-        print(f"❌ Error in security scan (offline sync): {e}")
+        print(f"❌ Error in security scan: {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
+# ============================================================
 
 # Update the existing manual cleanup endpoint to use 6 months
 @app.route('/api/admin/cleanup-records', methods=['POST'])
@@ -1870,10 +1109,9 @@ def get_realtime_alerts():
         # Return empty array if there's an error
         return jsonify([]), 200
 
-# Weekly canteen report submission by supers
 @app.route('/api/canteen/weekly-report', methods=['POST'])
 @jwt_required()
-def submit_weekly_canteen_report():
+def submit_weekly_canteen_report_endpoint():
     try:
         identity_string = get_jwt_identity()
         if ':' in identity_string:
@@ -1889,31 +1127,22 @@ def submit_weekly_canteen_report():
             if field not in data:
                 return jsonify({'message': f'Missing field: {field}'}), 400
         
-        # Add metadata
-        report = {
-            'week_number': data['week_number'],
-            'year': data['year'],
-            'hostel': data['hostel'],
-            'extra_students_count': data['extra_students_count'],
-            'report_data': data.get('report_data', {}),
-            'submitted_by': user_role,
-            'submitted_at': datetime.now(INDIA_TZ),
-            'report_type': 'canteen_weekly'
-        }
+        result = submit_weekly_canteen_report(
+            week_number=data['week_number'],
+            year=data['year'],
+            hostel=data['hostel'],
+            extra_students_count=data['extra_students_count'],
+            report_data=data.get('report_data', {}),
+            user_role=user_role
+        )
         
-        # Store in database
-        result = db.weekly_reports.insert_one(report)
+        if 'error' in result:
+            return jsonify({'message': result['error']}), 500
         
-        return jsonify({
-            'message': 'Weekly canteen report submitted successfully',
-            'report_id': str(result.inserted_id),
-            'week_number': data['week_number'],
-            'year': data['year'],
-            'hostel': data['hostel'],
-            'extra_students_count': data['extra_students_count']
-        }), 200
+        return jsonify(result), 200
         
     except Exception as e:
+        print(f"❌ Error in submit_weekly_canteen_report: {e}")
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
 # CORRECTED Monthly unauthorized visits endpoint with hostel filtering
@@ -2151,10 +1380,9 @@ def calculate_weekly_late_arrivals():
         print(f"❌ Error in weekly late arrivals calculation: {e}")
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
-# Get weekly late arrivals reports
 @app.route('/api/analytics/late-arrivals-reports', methods=['GET'])
 @jwt_required()
-def get_late_arrivals_reports():
+def get_late_arrivals_reports_endpoint():
     try:
         identity_string = get_jwt_identity()
         if ':' in identity_string:
@@ -2162,11 +1390,8 @@ def get_late_arrivals_reports():
             if user_role not in ['admin'] and not user_role.startswith('super_'):
                 return jsonify({'message': 'Access denied'}), 403
         
-        # Get reports from database
-        reports = list(db.weekly_reports.find(
-            {'report_type': 'late_arrivals_weekly'},
-            {'_id': 0}
-        ).sort([('year', -1), ('week_number', -1)]).limit(12))
+        limit = int(request.args.get('limit', 12))
+        reports = get_late_arrivals_reports(limit)
         
         return jsonify({'weekly_reports': reports}), 200
         
@@ -3555,10 +2780,9 @@ def sync_security_scans():
         return jsonify({'error': str(e)}), 500
 
 
-# Admin endpoint to get and set custom allowed time for students
 @app.route('/api/admin/student/allowed-time/<roll_no>', methods=['GET', 'POST'])
 @jwt_required()
-def manage_student_allowed_time(roll_no):
+def manage_student_allowed_time_endpoint(roll_no):
     try:
         identity_string = get_jwt_identity()
         if ':' in identity_string:
@@ -3568,40 +2792,19 @@ def manage_student_allowed_time(roll_no):
         else:
             return jsonify({'message': 'Invalid token format'}), 401
         
-        student = db.students.find_one({'roll_no': roll_no})
-        
-        if not student:
-            return jsonify({'message': 'Student not found'}), 404
-        
         if request.method == 'GET':
-            # Get current allowed time (default 480 minutes/8 hours if not set)
-            allowed_time = student.get('custom_allowed_time_minutes', 480)
-            return jsonify({
-                'roll_no': roll_no,
-                'name': student.get('name', 'Unknown'),
-                'current_allowed_time': allowed_time,
-                'is_custom': 'custom_allowed_time_minutes' in student,
-                'default_time': 480
-            }), 200
+            result = get_student_allowed_time(roll_no)
+            if 'error' in result:
+                return jsonify({'message': result['error']}), 404
+            return jsonify(result), 200
         
         elif request.method == 'POST':
             data = request.get_json()
             new_allowed_time = data.get('allowed_time_minutes')
             
-            if not new_allowed_time or not isinstance(new_allowed_time, (int, float)) or new_allowed_time <= 0:
-                return jsonify({'message': 'Valid allowed time in minutes is required'}), 400
-            
-            # Update student with custom allowed time
-            update_data = {
-                'custom_allowed_time_minutes': float(new_allowed_time),
-                'allowed_time_updated_at': datetime.now(INDIA_TZ),
-                'allowed_time_updated_by': 'admin'
-            }
-            
-            db.students.update_one(
-                {'roll_no': roll_no},
-                {'$set': update_data}
-            )
+            result = update_student_allowed_time(roll_no, new_allowed_time, device_id)
+            if 'error' in result:
+                return jsonify({'message': result['error']}), 400
             
             # Log the change
             log_security_event(
@@ -3611,28 +2814,27 @@ def manage_student_allowed_time(roll_no):
                 get_remote_address(),
                 {
                     'roll_no': roll_no,
-                    'student_name': student.get('name', 'Unknown'),
-                    'old_time': student.get('custom_allowed_time_minutes', 480),
-                    'new_time': new_allowed_time
+                    'student_name': result.get('student_name', 'Unknown'),
+                    'old_time': result.get('old_time', 480),
+                    'new_time': result.get('new_allowed_time')
                 }
             )
             
             return jsonify({
-                'message': f'Allowed time updated successfully to {new_allowed_time} minutes',
+                'message': result['message'],
                 'roll_no': roll_no,
-                'student_name': student.get('name', 'Unknown'),
-                'new_allowed_time': new_allowed_time,
-                'updated_at': datetime.now(INDIA_TZ).isoformat()
+                'student_name': result.get('student_name', 'Unknown'),
+                'new_allowed_time': result.get('new_allowed_time'),
+                'updated_at': get_ist_now().isoformat()
             }), 200
             
     except Exception as e:
         print(f"❌ Error in manage_student_allowed_time: {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
 
-# Admin endpoint to reset to default allowed time
 @app.route('/api/admin/student/allowed-time/<roll_no>/reset', methods=['POST'])
 @jwt_required()
-def reset_student_allowed_time(roll_no):
+def reset_student_allowed_time_endpoint(roll_no):
     try:
         identity_string = get_jwt_identity()
         if ':' in identity_string:
@@ -3640,20 +2842,9 @@ def reset_student_allowed_time(roll_no):
             if user_role != 'admin':
                 return jsonify({'message': 'Admin access required'}), 403
         
-        student = db.students.find_one({'roll_no': roll_no})
-        
-        if not student:
-            return jsonify({'message': 'Student not found'}), 404
-        
-        # Remove custom allowed time to use default
-        db.students.update_one(
-            {'roll_no': roll_no},
-            {'$unset': {
-                'custom_allowed_time_minutes': "",
-                'allowed_time_updated_at': "",
-                'allowed_time_updated_by': ""
-            }}
-        )
+        result = reset_student_allowed_time(roll_no, device_id)
+        if 'error' in result:
+            return jsonify({'message': result['error']}), 404
         
         # Log the reset
         log_security_event(
@@ -3663,17 +2854,17 @@ def reset_student_allowed_time(roll_no):
             get_remote_address(),
             {
                 'roll_no': roll_no,
-                'student_name': student.get('name', 'Unknown'),
-                'previous_time': student.get('custom_allowed_time_minutes', 480)
+                'student_name': result.get('student_name', 'Unknown'),
+                'previous_time': result.get('previous_time', 480)
             }
         )
         
         return jsonify({
-            'message': 'Allowed time reset to default (480 minutes)',
+            'message': result['message'],
             'roll_no': roll_no,
-            'student_name': student.get('name', 'Unknown'),
+            'student_name': result.get('student_name', 'Unknown'),
             'current_allowed_time': 480,
-            'reset_at': datetime.now(INDIA_TZ).isoformat()
+            'reset_at': get_ist_now().isoformat()
         }), 200
         
     except Exception as e:
@@ -3805,7 +2996,6 @@ def sync_students():
             'error': str(e)
         }), 500
 
-# Add this new endpoint for offline scanning validation
 @app.route('/api/student/validate-offline', methods=['POST'])
 @jwt_required()
 def validate_offline_scan():
@@ -3814,34 +3004,16 @@ def validate_offline_scan():
         data = request.get_json()
         roll_no = data.get('roll_no')
         
-        # Minimal validation - just check if student exists
-        student = db.students.find_one(
-            {'roll_no': roll_no},
-            {'roll_no': 1, 'name': 1, 'hostel': 1, '_id': 0}
-        )
+        result = validate_student_offline(roll_no)
         
-        if student:
-            return jsonify({
-                'valid': True,
-                'student': {
-                    'roll_no': student.get('roll_no'),
-                    'name': student.get('name'),
-                    'hostel': student.get('hostel')
-                }
-            }), 200
+        if result and result.get('valid'):
+            return jsonify(result), 200
         else:
-            return jsonify({
-                'valid': False,
-                'message': 'Student not found'
-            }), 404
+            return jsonify(result or {'valid': False, 'message': 'Student not found'}), 404
             
     except Exception as e:
         print(f"❌ Error in offline validation: {e}")
-        return jsonify({
-            'valid': False,
-            'error': str(e)
-        }), 500
-        
+        return jsonify({'valid': False, 'error': str(e)}), 500
 
 @app.route('/api/feedback/submit', methods=['POST'])
 @jwt_required()
@@ -3976,17 +3148,10 @@ def get_feedback():
     
 @app.route('/api/students/hostel/<hostel>', methods=['GET'])
 @jwt_required()
-def get_students_by_hostel(hostel):
+def get_students_by_hostel_endpoint(hostel):
     """
     Get all students for a specific hostel (for offline caching by security/canteen staff)
     Returns minimal data: roll_no, name, hostel only
-    
-    NEW FEATURES:
-    1. Supports 'ALL' parameter to get all hostels
-    2. Compression support for large datasets
-    3. Pagination support
-    4. Minimal data only (3 fields)
-    5. Role-based access control
     """
     try:
         identity_string = get_jwt_identity()
@@ -4003,15 +3168,12 @@ def get_students_by_hostel(hostel):
                     'suggested_endpoint': '/api/sync/students' if user_role == 'admin' else 'Contact admin'
                 }), 403
             
-            # Security/canteen can access ALL hostels for offline storage
-            # (No longer restricting to their own hostel only)
             print(f"📱 Student sync request: Hostel {hostel} by {user_role}")
         
         # Get query parameters
         page = int(request.args.get('page', 1))
-        page_size = int(request.args.get('page_size', 0))  # 0 = all records
+        page_size = int(request.args.get('page_size', 0))
         compress = request.args.get('compress', 'false').lower() == 'true'
-        fields = request.args.get('fields', 'minimal')  # minimal or all
         
         # Validate hostel parameter
         valid_hostels = ['A', 'B', 'C', 'D', 'ALL']
@@ -4023,88 +3185,37 @@ def get_students_by_hostel(hostel):
                 'received_hostel': hostel
             }), 400
         
-        # Build query based on hostel parameter
-        if hostel == 'ALL':
-            query = {'hostel': {'$in': ['A', 'B', 'C', 'D']}}
-            display_hostel = 'ALL (A, B, C, D)'
-        else:
-            query = {'hostel': hostel}
-            display_hostel = hostel
+        # Get students using service
+        result = get_students_by_hostel(hostel, page, page_size)
         
-        print(f"📊 Fetching students for: {display_hostel}, Page: {page}, Page size: {page_size or 'ALL'}")
-        
-        # CRITICAL: Only return these 3 minimal fields for offline use
-        # DO NOT add more fields to keep storage minimal
-        projection = {
-            '_id': 0,
-            'roll_no': 1,
-            'name': 1,
-            'hostel': 1
-            # NO OTHER FIELDS - this is intentional for minimal storage
-        }
-        
-        # Get total count first (for pagination metadata)
-        total_count = db.students.count_documents(query)
-        
-        # Apply pagination if requested
-        skip = (page - 1) * page_size if page_size > 0 else 0
-        limit = page_size if page_size > 0 else 0
-        
-        # Build query with sorting
-        find_query = db.students.find(query, projection)
-        
-        # Apply sorting (important for consistent pagination)
-        find_query = find_query.sort([('hostel', 1), ('roll_no', 1)])
-        
-        # Apply pagination
-        if skip > 0:
-            find_query = find_query.skip(skip)
-        if limit > 0:
-            find_query = find_query.limit(limit)
-        
-        # Execute query
-        students = list(find_query)
-        
-        # Calculate pagination metadata
-        total_pages = 1
-        if page_size > 0 and total_count > 0:
-            total_pages = (total_count + page_size - 1) // page_size
-        
-        # Prepare base response data
+        # Prepare base response
         base_response = {
             'success': True,
             'purpose': 'offline_caching',
-            'count': len(students),
-            'total_count': total_count,
+            'count': len(result['students']),
+            'total_count': result['total_count'],
             'hostel': hostel,
-            'hostel_display': display_hostel,
+            'hostel_display': 'ALL (A, B, C, D)' if hostel == 'ALL' else hostel,
             'fields_included': ['roll_no', 'name', 'hostel'],
             'note': 'Only minimal fields included to reduce storage. Additional data available via /api/student/<roll_no>/<role>',
             'pagination': {
-                'page': page,
-                'page_size': page_size if page_size > 0 else 'ALL',
-                'total_pages': total_pages if page_size > 0 else 1,
-                'has_more': page < total_pages if page_size > 0 else False,
-                'showing': f"{skip+1}-{skip+len(students)} of {total_count}" if page_size > 0 else f"ALL {total_count}"
+                'page': result['page'],
+                'page_size': result['page_size'],
+                'total_pages': result['total_pages'],
+                'has_more': result['page'] < result['total_pages'],
+                'showing': f"{((result['page']-1) * (result['page_size'] if isinstance(result['page_size'], int) else 0)) + 1}-{((result['page']-1) * (result['page_size'] if isinstance(result['page_size'], int) else 0)) + len(result['students'])} of {result['total_count']}" if isinstance(result['page_size'], int) and result['page_size'] > 0 else f"ALL {result['total_count']}"
             },
-            'estimated_size_kb': (len(json.dumps(students)) / 1024) if students else 0,
-            'timestamp': datetime.now(INDIA_TZ).isoformat()
+            'estimated_size_kb': (len(json.dumps(result['students'])) / 1024) if result['students'] else 0,
+            'timestamp': get_ist_now().isoformat()
         }
         
-        print(f"✅ Found {len(students)} students for {display_hostel} (Total: {total_count})")
-        
         # Handle compression if requested
-        if compress and students:
+        if compress and result['students']:
             try:
                 import gzip
                 import io
                 
-                # Prepare data for compression
-                full_response = {
-                    **base_response,
-                    'students': students
-                }
-                
+                full_response = {**base_response, 'students': result['students']}
                 students_json = json.dumps(full_response, cls=CustomJSONEncoder)
                 original_size = len(students_json)
                 compressed = gzip.compress(students_json.encode('utf-8'))
@@ -4113,36 +3224,27 @@ def get_students_by_hostel(hostel):
                 
                 print(f"📦 Compression: {original_size/1024:.1f}KB → {compressed_size/1024:.1f}KB ({compression_ratio:.1f}% saved)")
                 
-                # Update base response with compression info
                 base_response.update({
                     'compression_applied': True,
                     'original_size_kb': round(original_size / 1024, 2),
                     'compressed_size_kb': round(compressed_size / 1024, 2),
-                    'compression_ratio': f"{compression_ratio:.1f}%",
-                    'uncompressed_size_kb': round(len(json.dumps(students)) / 1024, 2)
+                    'compression_ratio': f"{compression_ratio:.1f}%"
                 })
                 
-                # Create compressed response
                 response = make_response(compressed)
                 response.headers['Content-Type'] = 'application/gzip'
                 response.headers['Content-Encoding'] = 'gzip'
                 response.headers['X-Metadata'] = json.dumps(base_response)
-                response.headers['X-Student-Count'] = str(len(students))
+                response.headers['X-Student-Count'] = str(len(result['students']))
                 
                 return response
                 
             except Exception as compression_error:
                 print(f"⚠️ Compression failed, falling back to JSON: {compression_error}")
-                # Fall back to regular JSON response
                 base_response['compression_failed'] = True
-                base_response['compression_error'] = str(compression_error)
         
-        # Regular JSON response (no compression or compression failed)
-        response_data = {
-            **base_response,
-            'students': students
-        }
-        
+        # Regular JSON response
+        response_data = {**base_response, 'students': result['students']}
         return jsonify(response_data), 200
         
     except Exception as e:
@@ -4155,18 +3257,7 @@ def get_students_by_hostel(hostel):
             'message': f'Server error: {str(e)}',
             'endpoint': '/api/students/hostel/<hostel>',
             'valid_hostels': ['A', 'B', 'C', 'D', 'ALL'],
-            'common_parameters': {
-                'page': 'Page number (default: 1)',
-                'page_size': 'Records per page (0 = all)',
-                'compress': 'true/false (gzip compression)',
-                'fields': 'minimal (default) or all'
-            },
-            'example_urls': [
-                '/api/students/hostel/A?page=1&page_size=100',
-                '/api/students/hostel/ALL?compress=true',
-                '/api/students/hostel/B?fields=minimal'
-            ],
-            'timestamp': datetime.now(INDIA_TZ).isoformat()
+            'timestamp': get_ist_now().isoformat()
         }), 500
 
 
@@ -4209,7 +3300,7 @@ def check_student_data_availability(hostel):
     
 @app.route('/api/students/all-minimal', methods=['GET'])
 @jwt_required()
-def get_all_students_minimal():
+def get_all_students_minimal_endpoint():
     """
     Get ALL students from ALL hostels with MINIMAL data only
     Perfect for offline storage: roll_no, name, hostel only
@@ -4225,21 +3316,7 @@ def get_all_students_minimal():
                     'message': 'Offline student data is only for security and canteen staff'
                 }), 403
         
-        print(f"📱 MINIMAL student sync for offline by {user_role}")
-        
-        # CRITICAL: Only these 3 fields - nothing else!
-        projection = {
-            '_id': 0,
-            'roll_no': 1,
-            'name': 1,
-            'hostel': 1
-        }
-        
-        # Get all students from all hostels
-        students = list(db.students.find(
-            {'hostel': {'$in': ['A', 'B', 'C', 'D']}},
-            projection
-        ).sort([('hostel', 1), ('roll_no', 1)]))
+        students = get_all_students_minimal()
         
         # Calculate approximate data size
         import sys
@@ -4257,11 +3334,10 @@ def get_all_students_minimal():
                                'disciplinary_records', 'medical_info'],
             'students': students,
             'estimated_size_kb': round(estimated_size_kb, 2),
-            'timestamp': datetime.now(INDIA_TZ).isoformat()
+            'timestamp': get_ist_now().isoformat()
         }
         
         print(f"✅ MINIMAL offline sync: {len(students)} students, ~{estimated_size_kb:.1f}KB")
-        print(f"   Fields: ONLY roll_no, name, hostel")
         
         return jsonify(response), 200
         
@@ -4274,36 +3350,15 @@ def get_all_students_minimal():
         
 @app.route('/api/students/count', methods=['GET'])
 @jwt_required()
-def get_student_counts():
-    """
-    Get student counts for sync planning
-    Helps frontend decide if sync is needed
-    """
+def get_student_counts_endpoint():
+    """Get student counts for sync planning"""
     try:
-        identity_string = get_jwt_identity()
-        
-        counts = {}
-        total = 0
-        
-        for hostel in ['A', 'B', 'C', 'D']:
-            count = db.students.count_documents({'hostel': hostel})
-            counts[hostel] = count
-            total += count
-        
-        return jsonify({
-            'success': True,
-            'total_students': total,
-            'by_hostel': counts,
-            'average_per_hostel': total / 4 if total > 0 else 0,
-            'timestamp': datetime.now(INDIA_TZ).isoformat(),
-            'note': 'Counts include all students from each hostel'
-        }), 200
+        result = get_student_counts()
+        result['timestamp'] = get_ist_now().isoformat()
+        return jsonify(result), 200
         
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == "__main__":
     # Also run cleanup when the app starts for any stale records

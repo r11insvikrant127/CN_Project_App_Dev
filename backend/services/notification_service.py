@@ -10,6 +10,7 @@ import os
 import firebase_admin
 from firebase_admin import credentials, messaging
 from dotenv import load_dotenv
+from utils.db_utils import get_db
 
 
 load_dotenv()

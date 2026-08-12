@@ -3402,7 +3402,7 @@ def sync_security_scans():
                 print(f"   In time:  {now} (tz: {now.tzinfo})")
                 
                 # ✅ NOW both datetimes are properly in IST, safe to subtract
-                                time_spent = (
+                time_spent = (
                     now - out_time
                 ).total_seconds() / 60
 

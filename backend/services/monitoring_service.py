@@ -91,7 +91,7 @@ def monitor_active_checkouts(db=None):
         print(f"🕒 MONITOR TIME | UTC={now_utc} | IST={get_ist_now()}")
         
         # Get all active checkouts
-        active_checkouts = list(db.active_checkouts.find({'status': 'active'}))
+        active_checkouts = list(db.active_checkouts.find({'status': {'$in': ['active', 'violation']}}))
         print(f"📊 TOTAL ACTIVE CHECKOUTS: {len(active_checkouts)}")
         
         if not active_checkouts:
@@ -109,6 +109,12 @@ def monitor_active_checkouts(db=None):
 def _check_single_checkout(checkout, now_utc, db):
     """Check a single checkout for violation"""
     roll_no = checkout.get('roll_no')
+    if checkout.get('status') == 'violation':
+        print(
+            f"   ⚠️ Already violated | Roll={roll_no} | "
+            f"Waiting for check-in"
+        )
+        return
     deadline = checkout.get('deadline')
     out_time = checkout.get('out_time')
     allowed_minutes = float(checkout.get('allowed_minutes', 480))

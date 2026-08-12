@@ -625,6 +625,7 @@ def monitor_active_checkouts():
             f"{type(e).__name__}: {e}"
         )
 @app.route('/api/internal/monitor-active-checkouts', methods=['POST'])
+@limiter.exempt
 def trigger_active_checkout_monitor():
 
     provided_secret = request.headers.get("X-Monitoring-Secret")

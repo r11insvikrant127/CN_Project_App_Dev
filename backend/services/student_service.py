@@ -54,13 +54,30 @@ def get_student_with_role(roll_no, user_role, requested_role, db=None):
     
     # Serialize dates to IST
     def serialize_dates(obj):
-        if isinstance(obj, (datetime, date)):
+        if isinstance(obj, datetime):
             if obj.tzinfo is None:
                 obj = obj.replace(tzinfo=timezone.utc)
             obj_ist = obj.astimezone(INDIA_TZ)
             return obj_ist.isoformat()
+
+        elif isinstance(obj, date):
+            return obj.isoformat()
+
         elif isinstance(obj, ObjectId):
             return str(obj)
+
+        elif isinstance(obj, dict):
+            return {
+                key: serialize_dates(value)
+                for key, value in obj.items()
+            }
+
+        elif isinstance(obj, list):
+            return [
+                serialize_dates(item)
+                for item in obj
+            ]
+
         return obj
     
     # Return data based on role

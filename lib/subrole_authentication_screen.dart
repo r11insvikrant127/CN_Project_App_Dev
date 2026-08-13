@@ -828,7 +828,10 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
         await prefs.setString('hostel', hostel);
         await prefs.setString('username', data['username'] ?? subrole);
         // Connect supervisor app to WebSocket for real-time alerts
-        SocketService.connect(hostel: hostel,accessToken: accessToken,);
+        SocketService.connect(
+          hostel: hostel,
+          accessToken: accessToken,
+        );
 
         SocketService.listenForViolationAlerts((data) {
           print('⚡ REAL-TIME VIOLATION RECEIVED: $data');

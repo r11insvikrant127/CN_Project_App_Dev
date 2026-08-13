@@ -827,7 +827,11 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
         await prefs.setString('current_hostel', hostel);
         await prefs.setString('hostel', hostel);
         await prefs.setString('username', data['username'] ?? subrole);
-        // Connect supervisor app to WebSocket for real-time alerts
+        // Connect/reconnect WebSocket using the newly authenticated JWT.
+        // This is important when switching between security_a, security_b,
+        // security_c, security_d, super_a, etc.
+        SocketService.disconnect();
+
         SocketService.connect(
           hostel: hostel,
           accessToken: accessToken,

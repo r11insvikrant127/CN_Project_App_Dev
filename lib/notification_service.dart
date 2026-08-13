@@ -1,8 +1,11 @@
 // notification_service.dart
 // Firebase Cloud Messaging
 
+import 'dart:convert';
+
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:http/http.dart' as http;
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 
 class NotificationService {
@@ -142,39 +145,59 @@ class NotificationService {
     _socket!.connect();
   }
 
-  /// Subscribe this device to the notification topic
-  /// corresponding to the supervisor's hostel.
+  /// Register the current Firebase FCM token with the backend.
   ///
-  /// Hostel A → supervisor_hostel_a
-  /// Hostel B → supervisor_hostel_b
-  /// Hostel C → supervisor_hostel_c
-  /// Hostel D → supervisor_hostel_d
-  static Future<void> subscribeToSupervisorHostel(
-    String hostel,
-  ) async {
-    final String normalizedHostel =
-        hostel.trim().toUpperCase();
+  /// The backend determines the device_id from the authenticated JWT.
+  /// Flutter only sends the FCM token.
+  static Future<bool> registerFcmToken(String accessToken) async {
+    try {
+      final String? token = await _messaging.getToken();
 
-    const Map<String, String> topicMap = {
-      'A': 'supervisor_hostel_a',
-      'B': 'supervisor_hostel_b',
-      'C': 'supervisor_hostel_c',
-      'D': 'supervisor_hostel_d',
-    };
+      if (token == null || token.isEmpty) {
+        print('⚠️ FCM token is null/empty');
+        return false;
+      }
 
-    final String? topic = topicMap[normalizedHostel];
+      print('📱 Registering FCM token with backend...');
+      print('📱 FCM TOKEN: $token');
 
-    if (topic == null) {
-      throw ArgumentError(
-        'Invalid hostel for supervisor notification: $hostel',
+      final response = await http.post(
+        Uri.parse(
+          'https://cn-project-app-dev.onrender.com/api/register-fcm-token',
+        ),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $accessToken',
+        },
+        body: jsonEncode({
+          'fcm_token': token,
+        }),
       );
+
+      print(
+        '📱 FCM TOKEN REGISTRATION STATUS: '
+        '${response.statusCode}',
+      );
+
+      print(
+        '📱 FCM TOKEN REGISTRATION RESPONSE: '
+        '${response.body}',
+      );
+
+      if (response.statusCode == 200) {
+        print('✅ FCM token registered successfully');
+        return true;
+      }
+
+      print('❌ FCM token registration failed');
+      return false;
+    } catch (e) {
+      print(
+        '❌ FCM token registration error: '
+        '$e',
+      );
+      return false;
     }
-
-    await _messaging.subscribeToTopic(topic);
-
-    print(
-      '📢 Subscribed to supervisor topic: $topic',
-    );
   }
 }
 

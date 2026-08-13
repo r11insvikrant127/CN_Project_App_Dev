@@ -828,19 +828,33 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
         await prefs.setString('hostel', hostel);
         await prefs.setString('username', data['username'] ?? subrole);
         // Connect supervisor app to WebSocket for real-time alerts
-        SocketService.connect();
+        SocketService.connect(hostel: hostel,accessToken: accessToken,);
 
         SocketService.listenForViolationAlerts((data) {
           print('⚡ REAL-TIME VIOLATION RECEIVED: $data');
         });
 
-        // 🔔 Subscribe supervisor device to its hostel FCM topic
-        if (widget.mainRole == 'security') {
+        // 🔔 Register this supervisor device's FCM token
+        // Backend identifies the device from the authenticated JWT.
+        if (subrole.startsWith('super_')) {
           try {
-            await NotificationService.subscribeToSupervisorHostel(hostel);
-            print('🔔 Supervisor FCM topic subscription successful: $hostel');
+            final registered = await NotificationService.registerFcmToken(
+              accessToken,
+            );
+
+            if (registered) {
+              print(
+                '✅ FCM token registered successfully for $subrole',
+              );
+            } else {
+              print(
+                '⚠️ FCM token registration failed for $subrole',
+              );
+            }
           } catch (e) {
-            print('❌ Supervisor FCM topic subscription failed: $e');
+            print(
+              '❌ FCM token registration error for $subrole: $e',
+            );
           }
         }
         

@@ -53,6 +53,8 @@ from services.analytics_service import (
     submit_weekly_canteen_report,
     get_late_arrivals_reports
 )
+
+from services.notification_service import register_fcm_token
 # ============================================================
 
 # India timezone (UTC+5:30)
@@ -732,6 +734,73 @@ def authenticate_subrole():
         'message': 'Authentication successful',
         'auth_method': auth_method
     }), 200
+
+# ============================================================
+# REGISTER FCM TOKEN FOR AUTHENTICATED SUPERVISOR DEVICE
+# ============================================================
+@app.route('/api/register-fcm-token', methods=['POST'])
+@jwt_required()
+def register_fcm_token_endpoint():
+    try:
+        identity_string = get_jwt_identity()
+
+        if not identity_string or ':' not in identity_string:
+            return jsonify({
+                'success': False,
+                'message': 'Invalid authentication identity'
+            }), 401
+
+        device_id, user_role = identity_string.split(':', 1)
+
+        # Only hostel supervisors should register for
+        # allowed-time violation notifications.
+        if not user_role.startswith('super_'):
+            return jsonify({
+                'success': False,
+                'message': 'Only hostel supervisors can register FCM tokens'
+            }), 403
+
+        data = request.get_json() or {}
+        fcm_token = data.get('fcm_token')
+
+        if not fcm_token:
+            return jsonify({
+                'success': False,
+                'message': 'FCM token is required'
+            }), 400
+
+        success = register_fcm_token(
+            device_id=device_id,
+            fcm_token=fcm_token
+        )
+
+        if not success:
+            return jsonify({
+                'success': False,
+                'message': 'Device not found or inactive'
+            }), 404
+
+        print(
+            f"📱 FCM TOKEN API SUCCESS | "
+            f"Supervisor={user_role} | "
+            f"Device={device_id}"
+        )
+
+        return jsonify({
+            'success': True,
+            'message': 'FCM token registered successfully'
+        }), 200
+
+    except Exception as e:
+        print(
+            f"❌ FCM token API error: "
+            f"{type(e).__name__}: {e}"
+        )
+
+        return jsonify({
+            'success': False,
+            'message': 'Internal server error'
+        }), 500
 
 # Admin logout endpoint with session cleanup
 @app.route('/api/admin/logout', methods=['POST'])

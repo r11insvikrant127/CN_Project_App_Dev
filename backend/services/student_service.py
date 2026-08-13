@@ -9,6 +9,34 @@ from bson import ObjectId
 from utils.time_utils import INDIA_TZ, get_ist_now, normalize_datetime_to_ist
 from utils.db_utils import get_db
 
+def _get_recent_movement_records(roll_no, days=30, db=None):
+    """
+    Get movement records for a student from the dedicated
+    movement_records collection.
+    """
+
+    if db is None:
+        db = get_db()
+
+    if db is None:
+        return []
+
+    cutoff_time = get_ist_now() - timedelta(days=days)
+
+    records = list(
+        db.movement_records.find({
+            'roll_no': roll_no,
+            'out_time': {
+                '$gte': cutoff_time
+            }
+        }).sort(
+            'out_time',
+            -1
+        )
+    )
+
+    return records
+
 
 def get_student_with_role(roll_no, user_role, requested_role, db=None):
     """
@@ -82,16 +110,28 @@ def get_student_with_role(roll_no, user_role, requested_role, db=None):
     
     # Return data based on role
     if user_role == 'admin':
-        return _format_admin_student_data(student, serialize_dates), 200
+        return _format_admin_student_data(
+            student,
+            serialize_dates,
+            db
+        ), 200
     elif user_role.startswith('super_'):
-        return _format_super_student_data(student, serialize_dates), 200
+        return _format_super_student_data(
+            student,
+            serialize_dates,
+            db
+        ), 200
     elif user_role.startswith('security_') or user_role.startswith('canteen_'):
         return _format_basic_student_data(student, user_hostel), 200
     else:
         return {'message': 'Invalid role'}, 400
 
 
-def _format_admin_student_data(student, serialize_dates):
+def _format_admin_student_data(
+    student,
+    serialize_dates,
+    db
+):
     """Format student data for admin"""
     return {
         'roll_no': student['roll_no'],
@@ -108,13 +148,24 @@ def _format_admin_student_data(student, serialize_dates):
         'home_address': student['home_address'],
         'fee_status': student['fee_status'],
         'admission_date': serialize_dates(student['admission_date']),
-        'in_out_records': [serialize_dates(record) for record in student.get('in_out_records', [])],
+        'in_out_records': [
+            serialize_dates(record)
+            for record in _get_recent_movement_records(
+                student['roll_no'],
+                days=180,
+                db=db
+            )
+        ],
         'disciplinary_records': [serialize_dates(record) for record in student.get('disciplinary_records', [])],
         'medical_info': student.get('medical_info', [])
     }
 
 
-def _format_super_student_data(student, serialize_dates):
+def _format_super_student_data(
+    student,
+    serialize_dates,
+    db
+):
     """Format student data for super"""
     return {
         'roll_no': student['roll_no'],
@@ -125,7 +176,14 @@ def _format_super_student_data(student, serialize_dates):
         'academic_year': student['academic_year'],
         'branch': student['branch'],
         'contact_no': student['contact_no'],
-        'in_out_records': [serialize_dates(record) for record in student.get('in_out_records', [])],
+        'in_out_records': [
+            serialize_dates(record)
+            for record in _get_recent_movement_records(
+                student['roll_no'],
+                days=180,
+                db=db
+            )
+        ],
         'medical_info': student.get('medical_info', []),
         'disciplinary_records': [serialize_dates(record) for record in student.get('disciplinary_records', [])]
     }
@@ -495,45 +553,36 @@ def get_active_students_outside(db=None):
 
 def get_student_movement_history(roll_no, days=30, db=None):
     """
-    Get a student's movement history for the last N days
-    
-    Args:
-        roll_no: Student roll number
-        days: Number of days to look back
-        db: Database connection (optional)
-    
-    Returns:
-        list: Movement history records
+    Get a student's movement history from movement_records.
     """
+
     if db is None:
         db = get_db()
-    
+
     if db is None:
         return []
-    
+
+    # Verify student exists.
     student = db.students.find_one(
         {'roll_no': roll_no},
-        {'in_out_records': 1}
+        {'_id': 1}
     )
-    
+
     if not student:
         return []
-    
+
     cutoff_time = get_ist_now() - timedelta(days=days)
-    records = student.get('in_out_records', [])
-    
-    # Filter records within the time range
-    filtered_records = []
-    for record in records:
-        out_time = record.get('out_time')
-        if out_time:
-            # Normalize datetime for comparison
-            if out_time.tzinfo is None:
-                out_time = out_time.replace(tzinfo=timezone.utc).astimezone(INDIA_TZ)
-            elif out_time.tzinfo != INDIA_TZ:
-                out_time = out_time.astimezone(INDIA_TZ)
-            
-            if out_time >= cutoff_time:
-                filtered_records.append(record)
-    
-    return filtered_records
+
+    records = list(
+        db.movement_records.find({
+            'roll_no': roll_no,
+            'out_time': {
+                '$gte': cutoff_time
+            }
+        }).sort(
+            'out_time',
+            -1
+        )
+    )
+
+    return records

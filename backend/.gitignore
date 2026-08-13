@@ -73,6 +73,7 @@ htmlcov/
 
 # Backups
 backup/
+*.backup
 *.bak
 
 # Docker

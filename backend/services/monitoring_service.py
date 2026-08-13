@@ -16,12 +16,17 @@ from utils.time_utils import INDIA_TZ, get_ist_now, normalize_datetime_to_ist
 from utils.db_utils import get_db
 
 
-def create_active_checkout(roll_no, student, out_time, user_role, offline_sync=False, db=None):
+def create_active_checkout(
+    roll_no,
+    student,
+    out_time,
+    user_role,
+    offline_sync=False,
+    movement_id=None,
+    db=None
+):
     """
     Create/update an active checkout record for proactive allowed-time monitoring.
-    
-    This does NOT replace students.in_out_records.
-    It only stores currently active OUT sessions.
     """
     if db is None:
         db = get_db()
@@ -42,6 +47,7 @@ def create_active_checkout(roll_no, student, out_time, user_role, offline_sync=F
             'roll_no': roll_no,
             'student_name': student.get('name', 'Unknown'),
             'student_hostel': student.get('hostel', 'Unknown'),
+            'movement_id': movement_id,
             'out_time': out_time,
             'allowed_minutes': allowed_minutes,
             'deadline': deadline,

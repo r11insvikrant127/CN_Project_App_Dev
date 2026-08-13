@@ -95,7 +95,7 @@ def initialize_mongodb_connection():
     global db, client
     try:
         print(f"🔗 Attempting MongoDB connection to: {MONGO_URL.split('@')[1].split('/')[0] if '@' in MONGO_URL else 'localhost'}")
-        
+
         # Try connection with multiple SSL options
         connection_options = {
             'tls': True,
@@ -106,15 +106,15 @@ def initialize_mongodb_connection():
             'retryWrites': True,
             'maxPoolSize': 50
         }
-        
+
         client = MongoClient(MONGO_URL, **connection_options)
-        
+
         # Test the connection
         client.admin.command('ping')
         db = client["student_management"]
         print("✅ MongoDB connected successfully!")
         return True
-        
+
     except Exception as e:
         print(f"❌ MongoDB connection failed: {e}")
         print("🔄 Application will start without database connectivity")
@@ -153,12 +153,12 @@ LOCKOUT_TIME = 15 * 60
 # Predefined unique IDs for each subrole
 SUBROLE_IDS = {
     "super_a": "super_a_12345",
-    "super_b": "super_b_12345", 
+    "super_b": "super_b_12345",
     "super_c": "super_c_12345",
     "super_d": "super_d_12345",
     "canteen_a": "canteen_a_12345",
     "canteen_b": "canteen_b_12345",
-    "canteen_c": "canteen_c_12345", 
+    "canteen_c": "canteen_c_12345",
     "canteen_d": "canteen_d_12345",
     "security_a": "security_a_12345",
     "security_b": "security_b_12345",
@@ -168,31 +168,31 @@ SUBROLE_IDS = {
 }
 
 
-# CORRECTED: Function to cleanup old movement records (older than 6 months)
 def cleanup_old_movement_records():
     try:
         if db is None:
             print("⚠️ Skipping cleanup - no database connection")
             return
-            
-        # Changed from 30 days to 6 months (180 days)
+
         cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=180)
-        print(f"🔄 Cleaning up movement records older than: {cutoff_time}")
-        
-        # Update all students to remove in_out_records older than 6 months
-        result = db.students.update_many(
-            {},
-            {'$pull': {
-                'in_out_records': {
-                    'out_time': {'$lt': cutoff_time}
-                }
-            }}
+
+        print(
+            f"🧹 Cleaning up movement records older than: "
+            f"{cutoff_time}"
         )
-        
-        print(f"✅ Cleanup completed. Modified {result.modified_count} student records")
-        
+
+        result = db.movement_records.delete_many({
+            'out_time': {'$lt': cutoff_time}
+        })
+
+        print(
+            f"✅ Movement cleanup completed. "
+            f"Deleted {result.deleted_count} movement records"
+        )
+
     except Exception as e:
-        print(f"❌ Error during cleanup: {e}")
+        print(f"❌ Error during movement cleanup: {e}")
+
 
 def comprehensive_data_cleanup():
     """Clean up all old data older than 6 months"""
@@ -200,50 +200,48 @@ def comprehensive_data_cleanup():
         if db is None:
             print("⚠️ Skipping comprehensive cleanup - no database connection")
             return {'error': 'No database connection'}
-            
+
         cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=180)
         print(f"🧹 Starting comprehensive data cleanup for records older than: {cutoff_time}")
-        
+
         cleanup_stats = {}
-        
-        # 1. Clean old movement records from students
-        result_students = db.students.update_many(
-            {},
-            {'$pull': {
-                'in_out_records': {
-                    'out_time': {'$lt': cutoff_time}
-                }
-            }}
+
+        # 1. Clean old movement records
+        result_movement = db.movement_records.delete_many({
+            'out_time': {'$lt': cutoff_time}
+        })
+
+        cleanup_stats['movement_records_deleted'] = (
+            result_movement.deleted_count
         )
-        cleanup_stats['student_records_cleaned'] = result_students.modified_count
-        
+
         # 2. Clean old canteen visits (keep for analytics but remove very old ones)
         result_canteen = db.canteen_visits.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['canteen_visits_deleted'] = result_canteen.deleted_count
-        
+
         # 3. Clean old security logs (keep only 6 months for audit)
         result_security = db.security_logs.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['security_logs_deleted'] = result_security.deleted_count
-        
+
         # 4. Clean old realtime alerts (keep only recent alerts)
         result_alerts = db.realtime_alerts.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['alerts_deleted'] = result_alerts.deleted_count
-        
+
         # 5. Clean old admin scans
         result_admin_scans = db.admin_scans.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['admin_scans_deleted'] = result_admin_scans.deleted_count
-        
+
         print(f"✅ Comprehensive cleanup completed: {cleanup_stats}")
         return cleanup_stats
-        
+
     except Exception as e:
         print(f"❌ Error during comprehensive cleanup: {e}")
         return {'error': str(e)}
@@ -256,10 +254,10 @@ def initialize_database():
         if db is None:
             print("⚠️ Skipping database initialization - no MongoDB connection")
             return
-        
+
         # Create collections if they don't exist
         collections = db.list_collection_names()
-        
+
         required_collections = [
             'weekly_reports',
             'canteen_visits',
@@ -272,7 +270,7 @@ def initialize_database():
             if collection not in collections:
                 db.create_collection(collection)
                 print(f"✅ Created {collection} collection")
-        
+
         # Create indexes for better performance
         db.weekly_reports.create_index([('week_number', 1), ('year', 1)])
         db.canteen_visits.create_index([('timestamp', -1)])
@@ -293,7 +291,7 @@ def initialize_database():
         db.active_checkouts.create_index(
             [('deadline', 1)]
         )
-        
+
         print("✅ Database initialization completed")
     except Exception as e:
         print(f"❌ Database initialization error: {e}")
@@ -366,7 +364,7 @@ def log_security_event(event_type, user_role, device_id, ip_address, details=Non
         if db is None:
             print(f"⚠️ Security log skipped (no DB): {event_type} - {user_role} - {device_id}")
             return
-            
+
         log_entry = {
             'event_type': event_type,
             'user_role': user_role,
@@ -378,7 +376,7 @@ def log_security_event(event_type, user_role, device_id, ip_address, details=Non
         db.security_logs.insert_one(log_entry)
     except Exception as e:
         print(f"❌ Error logging security event: {e}")
-        
+
 # Enhanced admin authentication with biometric OR device verification
 @app.route('/api/admin/authenticate', methods=['POST'])
 @limiter.limit("5 per minute")
@@ -389,7 +387,7 @@ def admin_biometric_auth():
         unique_id = data.get('unique_id')
         biometric_verified = data.get('biometric_verified', False)
         ip_address = get_remote_address()
-        
+
         # Check if IP is locked out
         lockout_key = f"lockout:{ip_address}"
         if lockout_key in login_attempts:
@@ -400,25 +398,25 @@ def admin_biometric_auth():
                     'message': f'Account temporarily locked. Try again in {int((LOCKOUT_TIME - (time.time() - lockout_time)) / 60)} minutes.',
                     'locked': True
                 }), 429
-        
+
         # Verify device
         device = db.devices.find_one({'device_id': device_id, 'status': 'active'})
         if not device:
             log_security_event('device_verification_failed', 'admin', device_id, ip_address, {'reason': 'device_not_found'})
             return jsonify({'authenticated': False, 'message': 'Device not verified'}), 401
-        
+
         # Verify admin unique ID
         expected_id = SUBROLE_IDS.get('admin')
         if unique_id != expected_id:
             log_security_event('admin_auth_failed', 'admin', device_id, ip_address, {'reason': 'invalid_credentials'})
-            
+
             # Track failed attempt
             attempt_key = f"attempts:{ip_address}:{device_id}"
             if attempt_key not in login_attempts:
                 login_attempts[attempt_key] = []
-            
+
             login_attempts[attempt_key].append(time.time())
-            
+
             # Check if max attempts reached
             recent_attempts = [attempt for attempt in login_attempts[attempt_key] if time.time() - attempt < 900]  # 15 minutes
             if len(recent_attempts) >= MAX_LOGIN_ATTEMPTS:
@@ -428,24 +426,24 @@ def admin_biometric_auth():
                     'message': 'Too many failed attempts. Account locked for 15 minutes.',
                     'locked': True
                 }), 429
-            
+
             return jsonify({'authenticated': False, 'message': 'Invalid admin credentials'}), 401
-        
+
         # MODIFIED: Allow authentication with verified device (remove biometric requirement)
         # If device is verified and active, allow authentication without biometric
         # You can remove this entire biometric check block if you don't want biometric at all
-        
+
         # Clear login attempts on successful authentication
         attempt_key = f"attempts:{ip_address}:{device_id}"
         if attempt_key in login_attempts:
             del login_attempts[attempt_key]
-        
+
         # Create session
         session_id = hashlib.sha256(f"{device_id}{datetime.now(INDIA_TZ)}".encode()).hexdigest()
         identity_string = f"{device_id}:admin"
-        
+
         access_token = create_access_token(identity=identity_string)
-        
+
         # Store session
         active_sessions[session_id] = {
             'device_id': device_id,
@@ -456,12 +454,12 @@ def admin_biometric_auth():
             'device_verified': True,
             'ip_address': ip_address
         }
-        
+
         log_security_event('admin_login_success', 'admin', device_id, ip_address, {
             'session_id': session_id,
             'method': 'biometric' if biometric_verified else 'device'
         })
-        
+
         return jsonify({
             'authenticated': True,
             'access_token': access_token,
@@ -475,7 +473,7 @@ def admin_biometric_auth():
             'token_type': 'bearer',
             'expires_in': 28800
         }), 200
-        
+
     except Exception as e:
         log_security_event('admin_auth_error', 'admin', data.get('device_id', 'unknown'), get_remote_address(), {'error': str(e)})
         return jsonify({'authenticated': False, 'message': f'Authentication error: {str(e)}'}), 500
@@ -504,7 +502,7 @@ def refresh_token():
     try:
         current_user = get_jwt_identity()
         new_token = create_access_token(identity=current_user)
-        
+
         return jsonify({
             'access_token': new_token,
             'token_type': 'bearer',
@@ -519,16 +517,16 @@ def check_session_timeout():
     # Skip session check for authentication endpoints
     if request.endpoint in ['admin_biometric_auth', 'verify_device', 'authenticate_subrole', 'health', 'home']:
         return
-    
+
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
         try:
             # Extract session info from token
             identity = get_jwt_identity()
-            
+
             if identity and ':' in identity:
                 device_id, role = identity.split(':', 1)
-                
+
                 # Check for session timeout (only for admin for now)
                 if role == 'admin':
                     session_found = False
@@ -545,10 +543,10 @@ def check_session_timeout():
                                 active_sessions[session_id]['last_activity'] = datetime.now(INDIA_TZ)
                                 session_found = True
                                 break
-                    
+
                     if not session_found and role == 'admin':
                         return jsonify({'message': 'Invalid session. Please login again.'}), 401
-                        
+
         except Exception as e:
             print(f"Session check error: {e}")
 
@@ -559,9 +557,9 @@ def verify_device():
     data = request.get_json()
     device_id = data.get('device_id')
     ip_address = get_remote_address()
-    
+
     print(f"🔐 Device verification attempt: {device_id}")
-    
+
     # Check if IP is locked out
     lockout_key = f"lockout:{ip_address}"
     if lockout_key in login_attempts:
@@ -572,14 +570,14 @@ def verify_device():
                 'message': f'Too many verification attempts. Try again in {int((LOCKOUT_TIME - (time.time() - lockout_time)) / 60)} minutes.',
                 'locked': True
             }), 429
-    
+
     # Check if device exists in database
     device = db.devices.find_one({'device_id': device_id, 'status': 'active'})
-    
+
     if device:
         print("✅ Device verified successfully")
         log_security_event('device_verified', 'unknown', device_id, ip_address)
-        
+
         # Clear any previous failed attempts
         attempt_key = f"attempts:{ip_address}:{device_id}"
         if attempt_key in login_attempts:
@@ -588,7 +586,7 @@ def verify_device():
         # ✅ GENERATE PROPER JWT TOKEN
         identity_string = f"{device_id}:device_verified"
         access_token = create_access_token(identity=identity_string)
-            
+
         return jsonify({
             'verified': True,
             'message': 'Device verified successfully',
@@ -606,14 +604,14 @@ def verify_device():
     else:
         print("❌ Device not found in database")
         log_security_event('device_verification_failed', 'unknown', device_id, ip_address)
-        
+
         # Track failed attempt
         attempt_key = f"attempts:{ip_address}:{device_id}"
         if attempt_key not in login_attempts:
             login_attempts[attempt_key] = []
-        
+
         login_attempts[attempt_key].append(time.time())
-        
+
         # Check if max attempts reached
         recent_attempts = [attempt for attempt in login_attempts[attempt_key] if time.time() - attempt < 900]
         if len(recent_attempts) >= MAX_LOGIN_ATTEMPTS:
@@ -623,7 +621,7 @@ def verify_device():
                 'message': 'Too many failed verification attempts. Device locked for 15 minutes.',
                 'locked': True
             }), 429
-            
+
         return jsonify({
             'verified': False,
             'message': 'Device not registered. Please contact administrator.'
@@ -640,9 +638,9 @@ def authenticate_subrole():
     unique_id = data.get('unique_id')
     biometric_verified = data.get('biometric_verified', False)
     ip_address = get_remote_address()
-    
+
     print(f"🔐 Subrole authentication attempt: {subrole}, biometric: {biometric_verified}")
-    
+
     # Check lockout
     lockout_key = f"lockout:{ip_address}"
     if lockout_key in login_attempts:
@@ -653,17 +651,17 @@ def authenticate_subrole():
                 'message': f'Account temporarily locked. Try again in {int((LOCKOUT_TIME - (time.time() - lockout_time)) / 60)} minutes.',
                 'locked': True
             }), 429
-    
+
     # Verify device from database
     device = db.devices.find_one({'device_id': device_id, 'status': 'active'})
-    
+
     if not device:
         log_security_event('device_verification_failed', subrole, device_id, ip_address)
         return jsonify({
             'authenticated': False,
             'message': 'Device not verified or inactive'
         }), 401
-    
+
     # If biometric verified, skip unique ID check
     if biometric_verified:
         print(f"✅ Biometric authentication verified for {subrole}")
@@ -678,17 +676,17 @@ def authenticate_subrole():
                 'authenticated': False,
                 'message': 'Invalid subrole'
             }), 400
-        
+
         if unique_id != expected_id:
             log_security_event('subrole_auth_failed', subrole, device_id, ip_address, {'reason': 'invalid_credentials'})
-            
+
             # Track failed attempt
             attempt_key = f"attempts:{ip_address}:{device_id}:{subrole}"
             if attempt_key not in login_attempts:
                 login_attempts[attempt_key] = []
-            
+
             login_attempts[attempt_key].append(time.time())
-            
+
             # Check if max attempts reached
             recent_attempts = [attempt for attempt in login_attempts[attempt_key] if time.time() - attempt < 900]
             if len(recent_attempts) >= MAX_LOGIN_ATTEMPTS:
@@ -698,33 +696,33 @@ def authenticate_subrole():
                     'message': 'Too many failed attempts. Account locked for 15 minutes.',
                     'locked': True
                 }), 429
-                
+
             return jsonify({
                 'authenticated': False,
                 'message': 'Invalid unique ID'
             }), 401
-    
+
     # Clear login attempts on success
     attempt_key = f"attempts:{ip_address}:{device_id}:{subrole}"
     if attempt_key in login_attempts:
         del login_attempts[attempt_key]
-    
+
     # Create JWT token
     identity_string = f"{device_id}:{subrole}"
     access_token = create_access_token(identity=identity_string)
-    
+
     # Get user info from database
     user_info = {
         'username': f"{subrole}_user",
         'role': subrole,
         'hostel': subrole.split('_')[1].upper() if '_' in subrole else 'ALL'
     }
-    
+
     auth_method = 'biometric' if biometric_verified else 'unique_id'
     log_security_event('subrole_login_success', subrole, device_id, ip_address, {'method': auth_method})
-    
+
     print(f"✅ Subrole authentication successful: {subrole} via {auth_method}")
-    
+
     return jsonify({
         'authenticated': True,
         'access_token': access_token,
@@ -812,17 +810,17 @@ def admin_logout():
             device_id, user_role = identity_string.split(':', 1)
             if user_role != 'admin':
                 return jsonify({'message': 'Admin access required'}), 403
-        
+
         # Remove session
         for session_id, session_data in list(active_sessions.items()):
             if session_data['device_id'] == device_id:
                 del active_sessions[session_id]
                 break
-        
+
         log_security_event('admin_logout', 'admin', device_id, get_remote_address())
-        
+
         return jsonify({'message': 'Logout successful'}), 200
-        
+
     except Exception as e:
         return jsonify({'message': f'Error during logout: {str(e)}'}), 500
 
@@ -836,16 +834,16 @@ def get_security_logs():
             device_id, user_role = identity_string.split(':', 1)
             if user_role != 'admin':
                 return jsonify({'message': 'Admin access required'}), 403
-        
+
         # Get logs from last 7 days
         cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=7)
         logs = list(db.security_logs.find(
             {'timestamp': {'$gte': cutoff_time}},
             {'_id': 0}
         ).sort('timestamp', -1).limit(100))
-        
+
         return jsonify({'security_logs': logs}), 200
-        
+
     except Exception as e:
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
@@ -854,17 +852,17 @@ def cleanup_expired_data():
     """Clean up expired sessions and old login attempts"""
     try:
         current_time = time.time()
-        
+
         # Clean expired sessions
         expired_sessions = []
         for session_id, session_data in active_sessions.items():
             time_since_activity = datetime.now(INDIA_TZ) - session_data['last_activity']
             if time_since_activity.total_seconds() > SESSION_TIMEOUT:
                 expired_sessions.append(session_id)
-        
+
         for session_id in expired_sessions:
             del active_sessions[session_id]
-        
+
         # Clean old login attempts (older than 1 hour)
         for key in list(login_attempts.keys()):
             if key.startswith('attempts:'):
@@ -875,9 +873,9 @@ def cleanup_expired_data():
                     login_attempts[key] = recent_attempts
                 else:
                     del login_attempts[key]
-        
+
         print(f"🧹 Cleaned up {len(expired_sessions)} expired sessions")
-        
+
     except Exception as e:
         print(f"❌ Error during data cleanup: {e}")
 
@@ -908,33 +906,33 @@ def manual_cleanup_data():
             device_id, user_role = identity_string.split(':', 1)
             if user_role != 'admin':
                 return jsonify({'message': 'Admin access required'}), 403
-        
+
         data = request.get_json() or {}
         months = data.get('months', 6)  # Default to 6 months
-        
+
         # Calculate cutoff time based on months parameter
         cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=months*30)
-        
+
         print(f"🧹 Manual cleanup requested for data older than {months} months ({cutoff_time})")
-        
+
         # Perform comprehensive cleanup with custom cutoff
         cleanup_stats = comprehensive_data_cleanup_custom(cutoff_time)
-        
+
         # Log the cleanup event
         log_security_event(
-            'manual_data_cleanup', 
-            'admin', 
-            device_id, 
+            'manual_data_cleanup',
+            'admin',
+            device_id,
             get_remote_address(),
             {'months': months, 'cutoff_time': cutoff_time, 'stats': cleanup_stats}
         )
-        
+
         return jsonify({
             'message': f'Data cleanup completed for records older than {months} months',
             'cutoff_time': cutoff_time.isoformat(),
             'cleanup_stats': cleanup_stats
         }), 200
-        
+
     except Exception as e:
         return jsonify({'message': f'Error during cleanup: {str(e)}'}), 500
 
@@ -942,43 +940,41 @@ def comprehensive_data_cleanup_custom(cutoff_time):
     """Clean up all old data older than specified cutoff time"""
     try:
         print(f"🧹 Custom cleanup for records older than: {cutoff_time}")
-        
+
         cleanup_stats = {}
-        
+
         # Clean all collections with the custom cutoff time
-        result_students = db.students.update_many(
-            {},
-            {'$pull': {
-                'in_out_records': {
-                    'out_time': {'$lt': cutoff_time}
-                }
-            }}
+        result_movement = db.movement_records.delete_many({
+            'out_time': {'$lt': cutoff_time}
+        })
+
+        cleanup_stats['movement_records_deleted'] = (
+            result_movement.deleted_count
         )
-        cleanup_stats['student_records_cleaned'] = result_students.modified_count
-        
+
         result_canteen = db.canteen_visits.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['canteen_visits_deleted'] = result_canteen.deleted_count
-        
+
         result_security = db.security_logs.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['security_logs_deleted'] = result_security.deleted_count
-        
+
         result_alerts = db.realtime_alerts.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['alerts_deleted'] = result_alerts.deleted_count
-        
+
         result_admin_scans = db.admin_scans.delete_many({
             'timestamp': {'$lt': cutoff_time}
         })
         cleanup_stats['admin_scans_deleted'] = result_admin_scans.deleted_count
-        
+
         print(f"✅ Custom cleanup completed: {cleanup_stats}")
         return cleanup_stats
-        
+
     except Exception as e:
         print(f"❌ Error during custom cleanup: {e}")
         return {'error': str(e)}
@@ -993,10 +989,10 @@ def get_cleanup_stats():
             device_id, user_role = identity_string.split(':', 1)
             if user_role != 'admin':
                 return jsonify({'message': 'Admin access required'}), 403
-        
+
         # Calculate data statistics
         six_months_ago = datetime.now(INDIA_TZ) - timedelta(days=180)
-        
+
         stats = {
             'data_older_than_6_months': {
                 'canteen_visits': db.canteen_visits.count_documents({
@@ -1017,9 +1013,9 @@ def get_cleanup_stats():
             'current_time': datetime.now(INDIA_TZ).isoformat(),
             'cutoff_time': six_months_ago.isoformat()
         }
-        
+
         return jsonify(stats), 200
-        
+
     except Exception as e:
         return jsonify({'message': f'Error getting cleanup stats: {str(e)}'}), 500
 
@@ -1053,11 +1049,11 @@ def get_student_with_role_endpoint(roll_no, selected_role):
             device_id, user_role = identity_string.split(':', 1)
         else:
             return jsonify({'message': 'Invalid token format'}), 401
-        
+
         # Use the student service
         result, status_code = get_student_with_role(roll_no, user_role, selected_role)
         return jsonify(result), status_code
-        
+
     except Exception as e:
         print(f"❌ Error in get_student_with_role: {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
@@ -1074,16 +1070,16 @@ def handle_security_scan(selected_role):
             device_id, user_role = identity_string.split(':', 1)
         else:
             return jsonify({'message': 'Invalid token format'}), 401
-        
+
         if user_role != selected_role:
             return jsonify({'message': 'Role mismatch'}), 403
-        
+
         data = request.get_json()
-        
+
         # Use the movement service
         result, status_code = process_security_scan(user_role, data)
         return jsonify(result), status_code
-        
+
     except Exception as e:
         print(f"❌ Error in security scan: {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
@@ -1099,15 +1095,15 @@ def manual_cleanup_records():
             device_id, user_role = identity_string.split(':', 1)
             if user_role != 'admin':
                 return jsonify({'message': 'Admin access required'}), 403
-        
+
         # Use the comprehensive cleanup with 6 months default
         cleanup_stats = comprehensive_data_cleanup()
-        
+
         return jsonify({
             'message': 'Manual cleanup completed successfully (6 months data retention)',
             'cleanup_stats': cleanup_stats
         }), 200
-        
+
     except Exception as e:
         return jsonify({'message': f'Error during cleanup: {str(e)}'}), 500
 
@@ -1125,7 +1121,7 @@ def get_all_devices():
                 return jsonify({'message': 'Admin access required'}), 403
         else:
             return jsonify({'message': 'Invalid token format'}), 401
-        
+
         devices = list(db.devices.find({}, {'_id': 0}))
         return jsonify({'devices': devices}), 200
     except Exception as e:
@@ -1142,7 +1138,7 @@ def add_device():
                 return jsonify({'message': 'Admin access required'}), 403
         else:
             return jsonify({'message': 'Invalid token format'}), 401
-        
+
         data = request.get_json()
         new_device = {
             'device_id': data.get('device_id'),
@@ -1152,7 +1148,7 @@ def add_device():
             'last_verified': datetime.now(INDIA_TZ),
             'device_type': data.get('device_type', 'mobile')
         }
-        
+
         db.devices.insert_one(new_device)
         return jsonify({'message': 'Device added successfully'}), 200
     except Exception as e:
@@ -1165,16 +1161,16 @@ def get_realtime_alerts():
         identity_string = get_jwt_identity()
         if ':' in identity_string:
             device_id, user_role = identity_string.split(':', 1)
-        
+
         # Get alerts from last 7 days
         cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=7)
         alerts = list(db.realtime_alerts.find(
             {'timestamp': {'$gte': cutoff_time}},
             {'_id': 0}
         ).sort('timestamp', -1).limit(50))
-        
+
         return jsonify(alerts), 200
-        
+
     except Exception as e:
         # Return empty array if there's an error
         return jsonify([]), 200
@@ -1188,15 +1184,15 @@ def submit_weekly_canteen_report_endpoint():
             device_id, user_role = identity_string.split(':', 1)
             if not user_role.startswith('super_'):
                 return jsonify({'message': 'Super access required'}), 403
-        
+
         data = request.get_json()
-        
+
         # Validate required fields
         required_fields = ['week_number', 'year', 'hostel', 'extra_students_count']
         for field in required_fields:
             if field not in data:
                 return jsonify({'message': f'Missing field: {field}'}), 400
-        
+
         result = submit_weekly_canteen_report(
             week_number=data['week_number'],
             year=data['year'],
@@ -1205,12 +1201,12 @@ def submit_weekly_canteen_report_endpoint():
             report_data=data.get('report_data', {}),
             user_role=user_role
         )
-        
+
         if 'error' in result:
             return jsonify({'message': result['error']}), 500
-        
+
         return jsonify(result), 200
-        
+
     except Exception as e:
         print(f"❌ Error in submit_weekly_canteen_report: {e}")
         return jsonify({'message': f'Error: {str(e)}'}), 500
@@ -1225,35 +1221,35 @@ def get_monthly_unauthorized_visits():
             device_id, user_role = identity_string.split(':', 1)
             if user_role not in ['admin'] and not user_role.startswith('super_'):
                 return jsonify({'message': 'Access denied'}), 403
-        
+
         # Get month, year, and optional hostel from query params
         year = int(request.args.get('year', datetime.now(INDIA_TZ).year))
         month = int(request.args.get('month', datetime.now(INDIA_TZ).month))
         requested_hostel = request.args.get('hostel')  # For super users
-        
+
         start_date = datetime(year, month, 1, tzinfo=INDIA_TZ)
         if month == 12:
             end_date = datetime(year + 1, 1, 1, tzinfo=INDIA_TZ)
         else:
             end_date = datetime(year, month + 1, 1, tzinfo=INDIA_TZ)
-        
+
         print(f"📊 Fetching monthly data for {month}/{year}, hostel: {requested_hostel}")
-        
+
         # Build match filter based on user role
         match_filter = {
             'timestamp': {'$gte': start_date, '$lt': end_date},
             'is_unauthorized': True
         }
-        
+
         # If super user, filter by their hostel
         if user_role.startswith('super_') and requested_hostel:
-            # Super can see both students from their hostel going elsewhere 
+            # Super can see both students from their hostel going elsewhere
             # AND students from other hostels coming to their canteen
             match_filter['$or'] = [
                 {'student_hostel': requested_hostel},
                 {'canteen_hostel': requested_hostel}
             ]
-        
+
         # Aggregate data for pie chart (actual implementation)
         pipeline = [
             {'$match': match_filter},
@@ -1273,21 +1269,21 @@ def get_monthly_unauthorized_visits():
             }},
             {'$sort': {'visit_count': -1}}
         ]
-        
+
         results = list(db.canteen_visits.aggregate(pipeline))
-        
+
         # Prepare data for pie charts
         hostel_breakdown = defaultdict(lambda: defaultdict(int))
         canteen_breakdown = defaultdict(int)
-        
+
         for result in results:
             student_hostel = result.get('student_hostel', 'Unknown')
             canteen_hostel = result.get('canteen_hostel', 'Unknown')
             visit_count = result.get('visit_count', 0)
-            
+
             hostel_breakdown[student_hostel][canteen_hostel] += visit_count
             canteen_breakdown[canteen_hostel] += visit_count
-        
+
         # Convert to pie chart format
         pie_chart_data = {
             'by_student_hostel': [
@@ -1310,15 +1306,15 @@ def get_monthly_unauthorized_visits():
                 'year': year,
                 'total_unauthorized_visits': sum(canteen_breakdown.values()),
                 'unique_students_involved': len(set(
-                    f"{r.get('student_hostel', 'Unknown')}-{r.get('canteen_hostel', 'Unknown')}" 
+                    f"{r.get('student_hostel', 'Unknown')}-{r.get('canteen_hostel', 'Unknown')}"
                     for r in results
                 )),
                 'filtered_by_hostel': requested_hostel if user_role.startswith('super_') else 'ALL'
             }
         }
-        
+
         return jsonify(pie_chart_data), 200
-        
+
     except Exception as e:
         print(f"❌ Error in monthly analytics: {e}")
         # Return empty data if there's an error
@@ -1344,18 +1340,18 @@ def calculate_weekly_late_arrivals():
             device_id, user_role = identity_string.split(':', 1)
             if user_role not in ['admin'] and not user_role.startswith('super_'):
                 return jsonify({'message': 'Access denied'}), 403
-        
+
         data = request.get_json()
         week_number = data.get('week', datetime.now(INDIA_TZ).isocalendar()[1])
         year = data.get('year', datetime.now(INDIA_TZ).year)
-        
+
         # Calculate start and end of week (Monday to Sunday)
         start_date = datetime.fromisocalendar(year, week_number, 1).replace(tzinfo=INDIA_TZ)  # Monday
         end_date = start_date + timedelta(days=7)  # Next Monday
-        
+
         print(f"📅 Calculating weekly late arrivals for week {week_number}, {year}")
         print(f"📅 Date range: {start_date} to {end_date}")
-        
+
         # First, verify we have data for this period
         cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=30)
         if end_date < cutoff_time:
@@ -1363,7 +1359,7 @@ def calculate_weekly_late_arrivals():
                 'message': f'Data for week {week_number}, {year} has been cleaned up (older than 30 days)',
                 'error': 'data_cleaned'
             }), 400
-        
+
         # Aggregate late arrivals for the week
         pipeline = [
             {'$unwind': '$disciplinary_records'},
@@ -1401,11 +1397,11 @@ def calculate_weekly_late_arrivals():
             }},
             {'$sort': {'late_count': -1}}
         ]
-        
+
         results = list(db.students.aggregate(pipeline))
-        
+
         print(f"📊 Found {len(results)} students with late arrivals")
-        
+
         # Store weekly summary
         weekly_summary = {
             'week_number': week_number,
@@ -1422,17 +1418,17 @@ def calculate_weekly_late_arrivals():
             'report_type': 'late_arrivals_weekly',
             'calculated_by': user_role
         }
-        
+
         # Remove old report for same week if exists
         db.weekly_reports.delete_many({
             'week_number': week_number,
             'year': year,
             'report_type': 'late_arrivals_weekly'
         })
-        
+
         # Insert new report
         db.weekly_reports.insert_one(weekly_summary)
-        
+
         return jsonify({
             'message': f'Weekly late arrivals calculated for week {week_number}, {year}',
             'summary': {
@@ -1445,7 +1441,7 @@ def calculate_weekly_late_arrivals():
             },
             'student_details': results
         }), 200
-        
+
     except Exception as e:
         print(f"❌ Error in weekly late arrivals calculation: {e}")
         return jsonify({'message': f'Error: {str(e)}'}), 500
@@ -1459,12 +1455,12 @@ def get_late_arrivals_reports_endpoint():
             device_id, user_role = identity_string.split(':', 1)
             if user_role not in ['admin'] and not user_role.startswith('super_'):
                 return jsonify({'message': 'Access denied'}), 403
-        
+
         limit = int(request.args.get('limit', 12))
         reports = get_late_arrivals_reports(limit)
-        
+
         return jsonify({'weekly_reports': reports}), 200
-        
+
     except Exception as e:
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
@@ -1477,15 +1473,15 @@ def generate_weekly_report():
             device_id, user_role = identity_string.split(':', 1)
             if not user_role.startswith('super_'):
                 return jsonify({'message': 'Super access required'}), 403
-        
+
         data = request.get_json()
         week_number = data.get('week', datetime.now(INDIA_TZ).isocalendar()[1])
-        
+
         # Generate comprehensive weekly report
         report = _generate_weekly_analytics(week_number, user_role)
-        
+
         return jsonify(report), 200
-        
+
     except Exception as e:
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
@@ -1518,18 +1514,18 @@ def record_canteen_visit(selected_role):
             user_hostel = user_role.split('_')[1].upper() if '_' in user_role else 'ALL'
         else:
             return jsonify({'message': 'Invalid token format'}), 401
-        
+
         if user_role != selected_role:
             return jsonify({'message': 'Role mismatch'}), 403
-        
+
         data = request.get_json()
         roll_no = data.get('roll_no')
         is_offline_sync = data.get('offline_sync', False)
         original_timestamp = data.get('original_timestamp')
-        
+
         if not roll_no:
             return jsonify({'message': 'Roll number is required'}), 400
-        
+
         # Use original timestamp if this is an offline sync
         # FIXED:
         if is_offline_sync and original_timestamp:
@@ -1538,14 +1534,14 @@ def record_canteen_visit(selected_role):
             now = utc_time.astimezone(INDIA_TZ)
         else:
             now = datetime.now(INDIA_TZ)
-        
+
         student = db.students.find_one({'roll_no': roll_no})
-        
+
         if not student:
             return jsonify({'message': 'Student not found'}), 404
-        
+
         student_hostel = student.get('hostel', 'Unknown')
-        
+
         # Record canteen visit with unauthorized flag
         is_unauthorized = student_hostel != user_hostel
         visit_record = {
@@ -1562,9 +1558,9 @@ def record_canteen_visit(selected_role):
             'day_of_week': now.strftime('%A'),
             'offline_sync': is_offline_sync
         }
-        
+
         db.canteen_visits.insert_one(visit_record)
-        
+
         response_data = {
             'message': 'Canteen visit recorded successfully',
             'student_name': student.get('name', 'Unknown'),
@@ -1575,14 +1571,14 @@ def record_canteen_visit(selected_role):
             'canteen_hostel': user_hostel,
             'offline_sync': is_offline_sync
         }
-        
+
         if is_unauthorized:
             response_data['alert'] = 'Unauthorized visit detected!'
             # Trigger real-time alert
             _send_unauthorized_alert(visit_record)
-        
+
         return jsonify(response_data), 200
-        
+
     except Exception as e:
         print(f"❌ Error in canteen scan: {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
@@ -1597,25 +1593,25 @@ def get_unauthorized_visits_analytics():
             device_id, user_role = identity_string.split(':', 1)
             if user_role not in ['admin'] and not user_role.startswith('super_'):
                 return jsonify({'message': 'Access denied'}), 403
-        
+
         # Get timeframe and optional hostel from query params
         days = int(request.args.get('days', 30))
         requested_hostel = request.args.get('hostel')  # For super users
         cutoff_date = datetime.now(INDIA_TZ) - timedelta(days=days)
-        
+
         # Build match filter based on user role
         match_filter = {
             'timestamp': {'$gte': cutoff_date},
             'is_unauthorized': True
         }
-        
+
         # If super user, filter by their hostel
         if user_role.startswith('super_') and requested_hostel:
             match_filter['$or'] = [
                 {'student_hostel': requested_hostel},
                 {'canteen_hostel': requested_hostel}
             ]
-        
+
         pipeline = [
             {'$match': match_filter},
             {'$group': {
@@ -1629,30 +1625,30 @@ def get_unauthorized_visits_analytics():
             }},
             {'$sort': {'visit_count': -1}}
         ]
-        
+
         results = list(db.canteen_visits.aggregate(pipeline))
-        
+
         # Process for charts
         hostel_analysis = defaultdict(lambda: defaultdict(int))
         hourly_analysis = defaultdict(int)
         daily_analysis = defaultdict(int)
-        
+
         for result in results:
             student_hostel = result['_id']['student_hostel']
             canteen_hostel = result['_id']['canteen_hostel']
             hostel_analysis[student_hostel][canteen_hostel] += result['visit_count']
-            
+
             # Extract hour from latest visit
             hour = result['latest_visit'].hour
             hourly_analysis[hour] += result['visit_count']
-            
+
             # Daily analysis
             day = result['_id']['date'].strftime('%Y-%m-%d')
             daily_analysis[day] += result['visit_count']
-        
+
         # Predictive analytics
         predictions = _predict_unauthorized_visits(daily_analysis)
-        
+
         return jsonify({
             'summary': {
                 'total_unauthorized_visits': sum(daily_analysis.values()),
@@ -1666,7 +1662,7 @@ def get_unauthorized_visits_analytics():
             'predictions': predictions,
             'alerts': _generate_analytics_alerts(hostel_analysis, daily_analysis)
         }), 200
-        
+
     except Exception as e:
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
@@ -1675,33 +1671,33 @@ def _predict_unauthorized_visits(daily_analysis):
     """Predict next week's unauthorized visits using manual linear regression"""
     if len(daily_analysis) < 7:
         return {'accuracy': 'Insufficient data', 'predictions': []}
-    
+
     # Prepare data
     dates = sorted([datetime.strptime(day, '%Y-%m-%d') for day in daily_analysis.keys()])
     visits = [daily_analysis[date.strftime('%Y-%m-%d')] for date in dates]
-    
+
     # Convert dates to numerical values
     X = np.array([i for i in range(len(dates))])
     y = np.array(visits)
-    
+
     # Manual linear regression (y = mx + b)
     n = len(X)
     sum_x = np.sum(X)
     sum_y = np.sum(y)
     sum_xy = np.sum(X * y)
     sum_xx = np.sum(X * X)
-    
+
     # Calculate slope (m) and intercept (b)
     m = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x)
     b = (sum_y - m * sum_x) / n
-    
+
     # Predict next 7 days
     future_days = np.array([i for i in range(len(dates), len(dates) + 7)])
     predictions = m * future_days + b
-    
+
     # Calculate accuracy (similar to your previous logic)
     accuracy = max(0.85, min(0.95, 1 - (np.std(y) / np.mean(y)) if np.mean(y) > 0 else 0.85))
-    
+
     return {
         'accuracy': round(accuracy * 100, 1),
         'predictions': [
@@ -1716,11 +1712,11 @@ def _predict_unauthorized_visits(daily_analysis):
 def _generate_analytics_alerts(hostel_analysis, daily_analysis):
     """Generate intelligent alerts based on patterns"""
     alerts = []
-    
+
     # Peak hour detection
-    recent_visits = {k: v for k, v in daily_analysis.items() 
+    recent_visits = {k: v for k, v in daily_analysis.items()
                     if datetime.strptime(k, '%Y-%m-%d') > datetime.now(INDIA_TZ) - timedelta(days=7)}
-    
+
     if recent_visits:
         avg_recent = sum(recent_visits.values()) / len(recent_visits)
         if avg_recent > 10:
@@ -1729,7 +1725,7 @@ def _generate_analytics_alerts(hostel_analysis, daily_analysis):
                 'message': f'🚨 High unauthorized activity detected: {avg_recent:.1f} visits/day this week',
                 'priority': 'high'
             })
-    
+
     # Hostel pattern alerts
     for student_hostel, canteens in hostel_analysis.items():
         for canteen_hostel, count in canteens.items():
@@ -1739,7 +1735,7 @@ def _generate_analytics_alerts(hostel_analysis, daily_analysis):
                     'message': f'👥 {student_hostel} students frequent {canteen_hostel} canteen: {count} visits',
                     'priority': 'medium'
                 })
-    
+
     return alerts
 
 def _send_unauthorized_alert(visit_record):
@@ -1756,7 +1752,7 @@ def _send_unauthorized_alert(visit_record):
         'timestamp': datetime.now(INDIA_TZ),
         'priority': 'high'
     }
-    
+
     # Store alert for super users
     db.realtime_alerts.insert_one(alert_message)
     print(f"📢 ALERT: {alert_message['message']}")
@@ -1771,19 +1767,19 @@ def get_late_arrivals_analytics():
             device_id, user_role = identity_string.split(':', 1)
             if user_role not in ['admin'] and not user_role.startswith('super_'):
                 return jsonify({'message': 'Access denied'}), 403
-        
+
         # Get optional hostel filter for super users
         requested_hostel = request.args.get('hostel')
-        
+
         # Build match filter
         match_filter = {
             'disciplinary_records.description': {'$regex': 'exceeded allowed time', '$options': 'i'}
         }
-        
+
         # If super user, filter by their hostel
         if user_role.startswith('super_') and requested_hostel:
             match_filter['hostel'] = requested_hostel
-        
+
         # Get students with disciplinary records for late arrivals
         pipeline = [
             {'$unwind': '$disciplinary_records'},
@@ -1801,9 +1797,9 @@ def get_late_arrivals_analytics():
             }},
             {'$sort': {'late_count': -1}}
         ]
-        
+
         results = list(db.students.aggregate(pipeline))
-        
+
         return jsonify({
             'weekly_late_arrivals': results,
             'summary': {
@@ -1812,7 +1808,7 @@ def get_late_arrivals_analytics():
                 'filtered_by_hostel': requested_hostel if user_role.startswith('super_') else 'ALL'
             }
         }), 200
-        
+
     except Exception as e:
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
@@ -1826,20 +1822,20 @@ def handle_admin_scan(selected_role):
             device_id, user_role = identity_string.split(':', 1)
         else:
             return jsonify({'message': 'Invalid token format'}), 401
-        
+
         if user_role != selected_role:
             return jsonify({'message': 'Role mismatch'}), 403
-        
+
         data = request.get_json()
         roll_no = data.get('roll_no')
-        
+
         student = db.students.find_one({'roll_no': roll_no})
-        
+
         if not student:
             return jsonify({'message': 'Student not found'}), 404
-        
+
         now = datetime.now(INDIA_TZ)
-        
+
         # Record admin/super scan for audit
         scan_record = {
             'roll_no': roll_no,
@@ -1848,9 +1844,9 @@ def handle_admin_scan(selected_role):
             'student_name': student.get('name', 'Unknown'),
             'type': 'verification'
         }
-        
+
         db.admin_scans.insert_one(scan_record)
-        
+
         return jsonify({
             'message': 'Student verification successful',
             'student_name': student.get('name', 'Unknown'),
@@ -1858,7 +1854,7 @@ def handle_admin_scan(selected_role):
             'time': now.strftime('%Y-%m-%d %H:%M:%S'),
             'action': 'verified'
         }), 200
-        
+
     except Exception as e:
         print(f"❌ Error in admin scan: {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
@@ -1908,29 +1904,29 @@ def get_predictive_insights():
             device_id, user_role = identity_string.split(':', 1)
             if user_role not in ['admin'] and not user_role.startswith('super_'):
                 return jsonify({'message': 'Access denied'}), 403
-        
+
         # Get optional hostel filter for super users
         requested_hostel = request.args.get('hostel')
         days = int(request.args.get('days', 30))
-        
+
         cutoff_date = datetime.now(INDIA_TZ) - timedelta(days=days)
-        
+
         # Build match filter
         match_filter = {
             'timestamp': {'$gte': cutoff_date},
             'is_unauthorized': True
         }
-        
+
         # If super user, filter by their hostel
         if user_role.startswith('super_') and requested_hostel:
             match_filter['$or'] = [
                 {'student_hostel': requested_hostel},
                 {'canteen_hostel': requested_hostel}
             ]
-        
+
         # Get all unauthorized visits for analysis
         visits = list(db.canteen_visits.find(match_filter))
-        
+
         if not visits:
             return jsonify({
                 'message': 'Insufficient data for predictive analysis',
@@ -1938,14 +1934,14 @@ def get_predictive_insights():
                 'predictions': [],
                 'alerts': []
             }), 200
-        
+
         insights = _generate_predictive_insights(visits)
-        
+
         # ✅ FIXED: Pass user_role and requested_hostel to predictions
         predictions = _predict_next_week_visits(visits, user_role, requested_hostel)
-        
+
         alerts = _generate_ai_alerts(visits)
-        
+
         return jsonify({
             'insights': insights,
             'predictions': predictions,
@@ -1956,7 +1952,7 @@ def get_predictive_insights():
                 'generated_at': datetime.now(INDIA_TZ).isoformat()
             }
         }), 200
-        
+
     except Exception as e:
         print(f"❌ Error in predictive insights: {e}")
         return jsonify({'message': f'Error: {str(e)}'}), 500
@@ -1964,32 +1960,32 @@ def get_predictive_insights():
 def _generate_predictive_insights(visits):
     """Generate AI-powered insights from visit data"""
     insights = []
-    
+
     if not visits:
         print("📭 No visits data for insights generation")
         return insights
-    
+
     print(f"🔍 Generating insights from {len(visits)} visits")
-    
+
     # 1. Hostel Movement Patterns
     hostel_patterns = defaultdict(lambda: defaultdict(int))
     day_patterns = defaultdict(lambda: defaultdict(int))
     hour_patterns = defaultdict(int)
-    
+
     for visit in visits:
         student_hostel = visit.get('student_hostel', 'Unknown')
         canteen_hostel = visit.get('canteen_hostel', 'Unknown')
         day_of_week = visit['timestamp'].strftime('%A')
         hour = visit['timestamp'].hour
-        
+
         hostel_patterns[student_hostel][canteen_hostel] += 1
         day_patterns[student_hostel][day_of_week] += 1
         hour_patterns[hour] += 1
-    
+
     print(f"🏠 Hostel patterns: {dict(hostel_patterns)}")
     print(f"📅 Day patterns: {dict(day_patterns)}")
     print(f"⏰ Hour patterns: {dict(hour_patterns)}")
-    
+
     # Insight 1: Which hostel goes where (only if multiple canteens visited)
     for student_hostel, canteens in hostel_patterns.items():
         if len(canteens) > 1:  # Only show if visiting multiple canteens
@@ -2010,7 +2006,7 @@ def _generate_predictive_insights(visits):
                 'priority': 'low',
                 'data': dict(canteens)
             })
-    
+
     # Insight 2: Peak days for each hostel (only if significant variation)
     for student_hostel, days_data in day_patterns.items():
         if len(days_data) > 1 and max(days_data.values()) >= 3:  # At least 3 visits on peak day
@@ -2022,7 +2018,7 @@ def _generate_predictive_insights(visits):
                 'priority': 'low',
                 'data': dict(days_data)
             })
-    
+
     # Insight 3: Overall peak hours (only if significant data)
     if hour_patterns and max(hour_patterns.values()) >= 3:
         peak_hour = max(hour_patterns.items(), key=lambda x: x[1])
@@ -2033,7 +2029,7 @@ def _generate_predictive_insights(visits):
             'priority': 'high',
             'data': dict(hour_patterns)
         })
-    
+
     # Insight 4: Add a general insight if no specific patterns found
     if not insights and visits:
         total_visits = len(visits)
@@ -2044,24 +2040,24 @@ def _generate_predictive_insights(visits):
             'priority': 'info',
             'data': {'total_visits': total_visits}
         })
-    
+
     print(f"🎯 Generated {len(insights)} insights")
     return insights
 
 def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
     """Predict next week's unauthorized visits with manual linear regression - NOW ROLE-BASED"""
-    
+
     # ✅ FIXED: Filter visits for super users BEFORE prediction
     if user_role and user_role.startswith('super_') and requested_hostel:
         filtered_visits = []
         for visit in visits:
             # Super sees: their students going elsewhere + others coming to their canteen
-            if (visit.get('student_hostel') == requested_hostel or 
+            if (visit.get('student_hostel') == requested_hostel or
                 visit.get('canteen_hostel') == requested_hostel):
                 filtered_visits.append(visit)
         visits = filtered_visits
         print(f"🔍 Super prediction: Filtered to {len(visits)} visits for hostel {requested_hostel}")
-    
+
     if len(visits) < 7:
         return {
             'accuracy': 'Insufficient data (need at least 7 days)',
@@ -2069,35 +2065,35 @@ def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
             'confidence': 0,
             'scope': 'hostel' if user_role and user_role.startswith('super_') else 'system'
         }
-    
+
     # Group visits by date
     daily_visits = defaultdict(int)
     for visit in visits:
         date_str = visit['timestamp'].strftime('%Y-%m-%d')
         daily_visits[date_str] += 1
-    
+
     print(f"🔍 PREDICTION - Historical data analysis:")
     print(f"📊 Total visits analyzed: {len(visits)}")
     print(f"📅 Unique days with data: {len(daily_visits)}")
     print(f"📈 Daily visit counts:")
     for date_str, count in sorted(daily_visits.items()):
         print(f"   {date_str}: {count} visits")
-    
+
     if daily_visits:
         visit_counts = list(daily_visits.values())
         print(f"📊 Data stats - Min: {min(visit_counts)}, Max: {max(visit_counts)}, Avg: {sum(visit_counts)/len(visit_counts):.1f}")
-    
+
     # Prepare data for prediction
     dates = sorted([datetime.strptime(day, '%Y-%m-%d') for day in daily_visits.keys()])
     visit_counts = [daily_visits[date.strftime('%Y-%m-%d')] for date in dates]
-    
+
     # Convert dates to numerical values (days since first date)
     first_date = dates[0]
     X = np.array([(date - first_date).days for date in dates])
     y = np.array(visit_counts)
-    
+
     print(f"🔍 ML Input - X: {X}, y: {y}")
-    
+
     # MANUAL LINEAR REGRESSION (replaces sklearn)
     n = len(X)
     if n == 0:
@@ -2107,13 +2103,13 @@ def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
             'confidence': 0,
             'scope': 'hostel' if user_role and user_role.startswith('super_') else 'system'
         }
-    
+
     # Calculate slope (m) and intercept (b) manually: y = mx + b
     sum_x = np.sum(X)
     sum_y = np.sum(y)
     sum_xy = np.sum(X * y)
     sum_xx = np.sum(X * X)
-    
+
     # Avoid division by zero
     denominator = n * sum_xx - sum_x * sum_x
     if denominator == 0:
@@ -2123,39 +2119,39 @@ def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
     else:
         m = (n * sum_xy - sum_x * sum_y) / denominator
         b = (sum_y - m * sum_x) / n
-    
+
     print(f"🔍 Manual Regression - Intercept: {b:.2f}, Slope: {m:.2f}")
-    
+
     # Calculate accuracy metrics
     predictions = m * X + b
     mse = np.mean((y - predictions) ** 2)
     accuracy = max(0.75, min(0.95, 1 - (mse / np.mean(y)) if np.mean(y) > 0 else 0.85))
-    
+
     print(f"🔍 Manual Results - MSE: {mse:.2f}, Accuracy: {accuracy:.2f}")
-    
+
     # Predict next 7 days
     last_date = dates[-1]
     future_dates = [last_date + timedelta(days=i+1) for i in range(7)]
     future_X = np.array([(date - first_date).days for date in future_dates])
     future_predictions = m * future_X + b
-    
+
     print(f"🔍 Future predictions raw: {future_predictions}")
-    
+
     # Generate prediction dates
     prediction_dates = []
     for i in range(7):
         pred_date = last_date + timedelta(days=i+1)
         prediction_dates.append(pred_date)
-    
+
     scope = 'hostel' if user_role and user_role.startswith('super_') else 'system'
-    
+
     # Create final predictions with rounding and bounds
     final_predictions = []
     for pred_date, pred in zip(prediction_dates, future_predictions):
         # Ensure predictions are reasonable (not negative, not too high)
         bounded_pred = max(0, min(10, int(round(pred))))  # Cap at 10 visits max
         confidence_band = max(1, int(round(pred * 0.2)))  # 20% confidence band
-        
+
         final_predictions.append({
             'date': pred_date.strftime('%Y-%m-%d'),
             'day': pred_date.strftime('%A'),
@@ -2163,9 +2159,9 @@ def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
             'confidence_band': f'±{confidence_band}',
             'raw_prediction': round(pred, 2)  # For debugging
         })
-    
+
     print(f"🔍 Final predictions: {[p['predicted_visits'] for p in final_predictions]}")
-    
+
     return {
         'accuracy': f'{accuracy * 100:.1f}%',
         'confidence': round(accuracy * 100, 1),
@@ -2176,29 +2172,29 @@ def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
 def _generate_ai_alerts(visits):
     """Generate AI-powered alerts for suspicious patterns"""
     alerts = []
-    
+
     if not visits:
         return alerts
-    
+
     # Group visits by hour and hostel
     hourly_activity = defaultdict(lambda: defaultdict(int))
     hostel_activity = defaultdict(int)
     recent_activity = defaultdict(int)
-    
+
     cutoff_24h = datetime.now(INDIA_TZ) - timedelta(hours=24)
     cutoff_2h = datetime.now(INDIA_TZ) - timedelta(hours=2)
-    
+
     for visit in visits:
         student_hostel = visit.get('student_hostel', 'Unknown')
         hour = visit['timestamp'].hour
-        
+
         hourly_activity[student_hostel][hour] += 1
         hostel_activity[student_hostel] += 1
-        
+
         # Check recent activity (last 24 hours)
         if visit['timestamp'] >= cutoff_24h:
             recent_activity[student_hostel] += 1
-        
+
         # Check very recent activity (last 2 hours)
         if visit['timestamp'] >= cutoff_2h:
             # Alert for high activity in short timeframe
@@ -2212,7 +2208,7 @@ def _generate_ai_alerts(visits):
                     'count': recent_activity[student_hostel],
                     'timeframe': '2 hours'
                 })
-    
+
     # Alert for overall high activity hostels
     avg_activity = np.mean(list(hostel_activity.values())) if hostel_activity else 0
     for hostel, count in hostel_activity.items():
@@ -2226,7 +2222,7 @@ def _generate_ai_alerts(visits):
                 'count': count,
                 'average': round(avg_activity, 1)
             })
-    
+
     # Remove duplicates
     unique_alerts = []
     seen_messages = set()
@@ -2234,13 +2230,13 @@ def _generate_ai_alerts(visits):
         if alert['message'] not in seen_messages:
             unique_alerts.append(alert)
             seen_messages.add(alert['message'])
-    
+
     return unique_alerts
 
 def _generate_real_time_alerts(visits, timeframe_hours):
     """Generate real-time alerts for supervisors"""
     alerts = []
-    
+
     if not visits:
         # No activity alert
         alerts.append({
@@ -2251,18 +2247,18 @@ def _generate_real_time_alerts(visits, timeframe_hours):
             'icon': 'check_circle'
         })
         return alerts
-    
+
     # Group by student hostel
     hostel_activity = defaultdict(int)
     hourly_breakdown = defaultdict(int)
-    
+
     for visit in visits:
         student_hostel = visit.get('student_hostel', 'Unknown')
         hour = visit['timestamp'].hour
-        
+
         hostel_activity[student_hostel] += 1
         hourly_breakdown[hour] += 1
-    
+
     # Alert 1: High activity in timeframe
     total_visits = len(visits)
     if total_visits >= 10:
@@ -2274,7 +2270,7 @@ def _generate_real_time_alerts(visits, timeframe_hours):
             'count': total_visits,
             'timeframe': f'{timeframe_hours} hours'
         })
-    
+
     # Alert 2: Individual hostel activity
     for hostel, count in hostel_activity.items():
         if count >= 5:
@@ -2286,7 +2282,7 @@ def _generate_real_time_alerts(visits, timeframe_hours):
                 'hostel': hostel,
                 'count': count
             })
-    
+
     # Alert 3: Peak hour detection
     if hourly_breakdown:
         peak_hour = max(hourly_breakdown.items(), key=lambda x: x[1])
@@ -2301,7 +2297,7 @@ def _generate_real_time_alerts(visits, timeframe_hours):
                     'peak_hour': peak_hour[0],
                     'visit_count': peak_hour[1]
                 })
-    
+
     # Alert 4: Weekly report reminder (for supers)
     if timeframe_hours >= 24:  # Only for daily check
         today = datetime.now(INDIA_TZ)
@@ -2310,7 +2306,7 @@ def _generate_real_time_alerts(visits, timeframe_hours):
                 'timestamp': {'$gte': today - timedelta(days=7)},
                 'is_unauthorized': True
             })))
-            
+
             alerts.append({
                 'type': 'weekly_report_reminder',
                 'title': '📋 Weekly Report Due',
@@ -2318,7 +2314,7 @@ def _generate_real_time_alerts(visits, timeframe_hours):
                 'priority': 'info',
                 'weekly_visits': weekly_visits
             })
-    
+
     return alerts
 
 # NEW: Visit trends endpoint with role-based filtering
@@ -2331,26 +2327,26 @@ def get_visit_trends():
             device_id, user_role = identity_string.split(':', 1)
             if user_role not in ['admin'] and not user_role.startswith('super_'):
                 return jsonify({'message': 'Access denied'}), 403
-        
+
         # Get parameters
         days = int(request.args.get('days', 7))
         requested_hostel = request.args.get('hostel')  # For super users
-        
+
         cutoff_date = datetime.now(INDIA_TZ) - timedelta(days=days)
-        
+
         # Build match filter based on user role
         match_filter = {
             'timestamp': {'$gte': cutoff_date},
             'is_unauthorized': True
         }
-        
+
         # If super user, filter by their hostel
         if user_role.startswith('super_') and requested_hostel:
             match_filter['$or'] = [
                 {'student_hostel': requested_hostel},
                 {'canteen_hostel': requested_hostel}
             ]
-        
+
         # Aggregate daily visit trends
         pipeline = [
             {'$match': match_filter},
@@ -2383,16 +2379,16 @@ def get_visit_trends():
                 }
             }}
         ]
-        
+
         results = list(db.canteen_visits.aggregate(pipeline))
-        
+
         # Generate predictions for the trend data
         trends_with_predictions = _generate_trend_predictions(results, days)
-        
+
         # Calculate summary statistics
         total_visits = sum(item['actual'] for item in results)
         avg_daily = total_visits / len(results) if results else 0
-        
+
         # Calculate trend direction
         trend_direction = 'stable'
         trend_percentage = 0.0
@@ -2401,11 +2397,11 @@ def get_visit_trends():
             second_half = results[len(results)//2:]
             avg_first = sum(item['actual'] for item in first_half) / len(first_half) if first_half else 0
             avg_second = sum(item['actual'] for item in second_half) / len(second_half) if second_half else 0
-            
+
             if avg_first > 0:
                 trend_percentage = ((avg_second - avg_first) / avg_first) * 100
                 trend_direction = 'up' if trend_percentage > 5 else 'down' if trend_percentage < -5 else 'stable'
-        
+
         return jsonify({
             'trends': trends_with_predictions,
             'summary': {
@@ -2417,7 +2413,7 @@ def get_visit_trends():
                 'scope': 'hostel' if user_role.startswith('super_') and requested_hostel else 'system'
             }
         }), 200
-        
+
     except Exception as e:
         print(f"❌ Error in visit trends: {e}")
         return jsonify({
@@ -2437,16 +2433,16 @@ def _generate_trend_predictions(results, days):
     if not results or len(results) < 2:
         # Return empty or sample data if insufficient data
         return []
-    
+
     # Ensure we have whole numbers for visits
     for item in results:
         if 'actual' in item:
             item['actual'] = int(round(item['actual']))
-    
+
     # Use simple moving average for predictions (window = 2 for small datasets)
     visit_data = [item['actual'] for item in results]
     predictions = []
-    
+
     for i in range(len(visit_data)):
         if i < 1:
             predictions.append(visit_data[i])  # Use actual for first point
@@ -2454,11 +2450,11 @@ def _generate_trend_predictions(results, days):
             # Simple average of previous 2 days
             pred = sum(visit_data[max(0, i-1):i+1]) / min(2, i+1)
             predictions.append(int(round(pred)))
-    
+
     # Add predictions to results
     for i, item in enumerate(results):
         item['predicted'] = predictions[i]
-    
+
     return results
 
 # WEEKLY SUMMARY FOR ALERTS
@@ -2469,22 +2465,22 @@ def get_weekly_summary():
         identity_string = get_jwt_identity()
         if ':' in identity_string:
             device_id, user_role = identity_string.split(':', 1)
-        
+
         week_start = datetime.now(INDIA_TZ) - timedelta(days=datetime.now(INDIA_TZ).weekday())
         week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
-        
+
         # Get this week's unauthorized visits
         visits = list(db.canteen_visits.find({
             'timestamp': {'$gte': week_start},
             'is_unauthorized': True
         }))
-        
+
         # Group by hostel
         hostel_summary = defaultdict(int)
         for visit in visits:
             student_hostel = visit.get('student_hostel', 'Unknown')
             hostel_summary[student_hostel] += 1
-        
+
         return jsonify({
             'weekly_summary': {
                 'total_visits': len(visits),
@@ -2493,25 +2489,25 @@ def get_weekly_summary():
                 'days_remaining': 6 - datetime.now(INDIA_TZ).weekday()
             }
         }), 200
-        
+
     except Exception as e:
         print(f"❌ Error in weekly summary: {e}")
         return jsonify({'weekly_summary': {}}), 200
-    
+
 
 # Session timeout middleware
 @app.before_request
 def check_session_timeout():
     if request.endpoint in ['admin_biometric_auth', 'verify_device']:
         return
-    
+
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
         try:
             # Extract session info from token
             token = auth_header.split(' ')[1]
             identity = get_jwt_identity()
-            
+
             if identity and ':' in identity:
                 device_id, role = identity.split(':', 1)
                 if role == 'admin':
@@ -2538,316 +2534,106 @@ def secure_login():
     data = request.get_json()
     device_id = data.get('device_id')
     ip_address = get_remote_address()
-    
+
     # Check login attempts
     attempt_key = f"{ip_address}:{device_id}"
     current_time = time.time()
-    
+
     if attempt_key in login_attempts:
         attempts = login_attempts[attempt_key]
         # Clear old attempts (older than 15 minutes)
         attempts = [attempt for attempt in attempts if current_time - attempt < 900]
-        
+
         if len(attempts) >= 5:
             return jsonify({
                 'authenticated': False,
                 'message': 'Too many login attempts. Please try again in 15 minutes.',
                 'retry_after': 900
             }), 429
-        
+
         attempts.append(current_time)
         login_attempts[attempt_key] = attempts
     else:
         login_attempts[attempt_key] = [current_time]
-    
+
     # Continue with normal authentication
-    return authenticate_subrole()    
+    return authenticate_subrole()
 
 # Add to your existing backend.py
 
 @app.route('/api/sync/security-scans', methods=['POST'])
 @jwt_required()
 def sync_security_scans():
+    """
+    Process offline security scans using the same movement service
+    as normal online scans.
+
+    This keeps online and offline movement processing consistent.
+    """
     try:
         identity_string = get_jwt_identity()
-        if ':' in identity_string:
-            device_id, user_role = identity_string.split(':', 1)
-        
-        data = request.get_json()
+
+        if ':' not in identity_string:
+            return jsonify({
+                'message': 'Invalid token identity'
+            }), 401
+
+        device_id, user_role = identity_string.split(':', 1)
+
+        data = request.get_json() or {}
         scans = data.get('scans', [])
-        
+
+        if not isinstance(scans, list):
+            return jsonify({
+                'message': 'scans must be a list'
+            }), 400
+
         results = []
+
         for scan in scans:
-            roll_no = scan.get('roll_no')
-            action = scan.get('action')
-            original_timestamp = scan.get('original_timestamp')
-            
-            # Use original timestamp from offline scan
-            # FIXED:
-            if original_timestamp:
-                # Convert UTC timestamp to IST properly
-                utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
-                now = utc_time.astimezone(INDIA_TZ)
-            else:
-                now = datetime.now(INDIA_TZ)
-            
-            student = db.students.find_one({'roll_no': roll_no})
-            
-            if not student:
-                results.append({'success': False, 'roll_no': roll_no, 'error': 'Student not found'})
-                continue
-            
-            # Process check in/out
-            if action == 'out':
-                # Check if student is already out
-                current_out_record = None
-                for record in reversed(student.get('in_out_records', [])):
-                    if record.get('action') == 'out' and record.get('in_time') is None:
-                        current_out_record = record
-                        break
-                
-                if current_out_record:
-                    results.append({'success': False, 'roll_no': roll_no, 'error': 'Already checked out'})
-                    continue
-                
-                # Record out time
-                out_record = {
-                    'out_time': now,
-                    'in_time': None,
-                    'action': 'out',
-                    'recorded_by': user_role,
-                    'recorded_at': now,
-                    'status': 'outside',
-                    'offline_sync': True
-                }
-                
-                db.students.update_one(
-                    {'roll_no': roll_no},
-                    {'$push': {'in_out_records': out_record}}
-                )
 
-                # Create active checkout for proactive monitoring
-                create_active_checkout(
-                    roll_no=roll_no,
-                    student=student,
-                    out_time=now,
-                    user_role=user_role,
-                    offline_sync=True
-                )
-
+            if not isinstance(scan, dict):
                 results.append({
-                    'success': True,
-                    'roll_no': roll_no,
-                    'action': 'out'
+                    'success': False,
+                    'error': 'Invalid scan format'
                 })
-                
-            elif action == 'in':
-                # Find the latest out record without in time
-                latest_out_record = None
-                for record in reversed(student.get('in_out_records', [])):
-                    if record.get('action') == 'out' and record.get('in_time') is None:
-                        latest_out_record = record
-                        break
-                
-                if not latest_out_record:
-                    results.append({'success': False, 'roll_no': roll_no, 'error': 'No active check out'})
-                    continue
-                
-                # ✅ FIXED TIMEZONE HANDLING
-                raw_out_time = latest_out_record['out_time']  # Keep original for MongoDB query
-                
-                # Handle different datetime formats and timezones
-                if isinstance(raw_out_time, str):
-                    try:
-                        # Convert string to datetime object
-                        out_time = datetime.fromisoformat(raw_out_time.replace('Z', '+00:00'))
-                        print(f"🕒 Converted string out_time to datetime: {out_time}")
-                    except Exception as e:
-                        print(f"❌ Error converting string out_time: {e}")
-                        results.append({'success': False, 'roll_no': roll_no, 'error': 'Invalid timestamp format in database'})
-                        continue
-                else:
-                    out_time = raw_out_time
-                
-                # ✅ CRITICAL FIX: Normalize timezone to IST for comparison
-                if out_time.tzinfo is None:
-                    # If no timezone, assume it's UTC and convert to IST
-                    out_time = out_time.replace(tzinfo=timezone.utc).astimezone(INDIA_TZ)
-                    print(f"🕒 Converted naive out_time to IST: {out_time}")
-                elif out_time.tzinfo.utcoffset(out_time).total_seconds() == 0:
-                    # If it's UTC, convert to IST
-                    out_time = out_time.astimezone(INDIA_TZ)
-                    print(f"🕒 Converted UTC out_time to IST: {out_time}")
-                else:
-                    # Already in some timezone, ensure it's IST
-                    out_time = out_time.astimezone(INDIA_TZ)
-                    print(f"🕒 Normalized out_time to IST: {out_time}")
-                
-                # ✅ Ensure now is also in IST (should already be)
-                # ✅ FIXED:
-                if original_timestamp:
-                    # Convert UTC timestamp to IST properly
-                    utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
-                    now = utc_time.astimezone(INDIA_TZ)
-                else:
-                    now = datetime.now(INDIA_TZ)
-                
-                print(f"🔍 DEBUG TIME CALCULATION - Sync:")
-                print(f"   Roll No: {roll_no}")
-                print(f"   Out time: {out_time} (tz: {out_time.tzinfo})")
-                print(f"   In time:  {now} (tz: {now.tzinfo})")
-                
-                # ✅ NOW both datetimes are properly in IST, safe to subtract
-                time_spent = (
-                    now - out_time
-                ).total_seconds() / 60
+                continue
 
-                # -------------------------------------------------
-                # NEVER ALLOW NEGATIVE DURATION
-                # -------------------------------------------------
+            # Force offline flag for synchronized scans.
+            scan_data = dict(scan)
+            scan_data['offline_sync'] = True
 
-                if time_spent < 0:
-                    print(
-                        f"⚠️ INVALID OFFLINE SCAN ORDER | "
-                        f"Roll={roll_no} | "
-                        f"OUT={out_time} | "
-                        f"IN={now} | "
-                        f"Duration={time_spent:.4f}"
-                    )
+            # Process through the SAME movement service used
+            # by normal online security scans.
+            response_data, status_code = process_security_scan(
+                user_role=user_role,
+                data=scan_data,
+                db=db
+            )
 
-                    # Mobile device supplied a stale/wrong timestamp.
-                    # Use server time instead.
-                    now = datetime.now(INDIA_TZ)
+            result = dict(response_data)
+            result['status_code'] = status_code
 
-                    time_spent = (
-                        now - out_time
-                    ).total_seconds() / 60
+            # Normalize success field for the Flutter sync client.
+            result['success'] = (
+                200 <= status_code < 300
+            )
 
-                # If server time is STILL before OUT time,
-                # reject the scan instead of storing bad data.
-                if time_spent < 0:
-                    results.append({
-                        'success': False,
-                        'roll_no': roll_no,
-                        'error': 'Invalid server timestamp: IN is earlier than OUT'
-                    })
-                    continue
+            results.append(result)
 
-                print(
-                    f"🔍 Calculated time spent: "
-                    f"{time_spent:.4f} minutes"
-                )
+        return jsonify({
+            'results': results
+        }), 200
 
-                # -------------------------------------------------
-                # UPDATE THE EXACT OUT RECORD
-                # -------------------------------------------------
-
-                db.students.update_one(
-                    {
-                        'roll_no': roll_no,
-                        'in_out_records.out_time': raw_out_time
-                    },
-                    {
-                        '$set': {
-                            'in_out_records.$.in_time': now,
-                            'in_out_records.$.time_spent_minutes': round(
-                                time_spent, 4
-                            ),
-                            'in_out_records.$.action': 'in',
-                            'in_out_records.$.status': 'inside',
-                            'in_out_records.$.offline_sync': True
-                        }
-                    }
-                )
-
-                # -------------------------------------------------
-                # REMOVE ACTIVE CHECKOUT
-                # -------------------------------------------------
-
-                db.active_checkouts.delete_one({
-                    'roll_no': roll_no
-                })
-
-                # -------------------------------------------------
-                # CHECK ALLOWED TIME
-                # -------------------------------------------------
-
-                max_allowed_time = float(
-                    student.get(
-                        'custom_allowed_time_minutes',
-                        480
-                    )
-                )
-
-                if time_spent > max_allowed_time:
-
-                    disciplinary_record = {
-                        'date': now,
-                        'time': now.strftime('%H:%M'),
-                        'description': (
-                            f'Exceeded allowed time outside by '
-                            f'{round(time_spent - max_allowed_time, 2)} minutes. '
-                            f'Out at: '
-                            f'{out_time.strftime("%Y-%m-%d %H:%M")}, '
-                            f'In at: '
-                            f'{now.strftime("%Y-%m-%d %H:%M")}, '
-                            f'Allowed: {max_allowed_time} minutes'
-                        ),
-                        'action_taken': (
-                            f'Warning issued for exceeding '
-                            f'{max_allowed_time}-minute limit'
-                        ),
-                        'recorded_by': user_role,
-                        'recorded_at': now,
-                        'time_exceeded_minutes': round(
-                            time_spent - max_allowed_time,
-                            2
-                        ),
-                        'auto_generated': True,
-                        'offline_sync': True,
-                        'allowed_time_limit': max_allowed_time
-                    }
-
-                    db.students.update_one(
-                        {'roll_no': roll_no},
-                        {
-                            '$push': {
-                                'disciplinary_records':
-                                    disciplinary_record
-                            }
-                        }
-                    )
-
-                    results.append({
-                        'success': True,
-                        'roll_no': roll_no,
-                        'action': 'in',
-                        'warning': (
-                            f'Time exceeded limit by '
-                            f'{round(time_spent - max_allowed_time, 2)} minutes'
-                        ),
-                        'time_spent_minutes': round(
-                            time_spent,
-                            2
-                        )
-                    })
-
-                else:
-                    results.append({
-                        'success': True,
-                        'roll_no': roll_no,
-                        'action': 'in',
-                        'time_spent_minutes': round(
-                            time_spent,
-                            2
-                        )
-                    })
-        
-        return jsonify({'results': results}), 200
-        
     except Exception as e:
-        print(f"❌ Error in sync_security_scans: {e}")
-        return jsonify({'error': str(e)}), 500
+        print(
+            f"❌ Error in sync_security_scans: "
+            f"{type(e).__name__}: {e}"
+        )
+
+        return jsonify({
+            'error': str(e)
+        }), 500
 
 
 @app.route('/api/admin/student/allowed-time/<roll_no>', methods=['GET', 'POST'])
@@ -2861,26 +2647,26 @@ def manage_student_allowed_time_endpoint(roll_no):
                 return jsonify({'message': 'Admin access required'}), 403
         else:
             return jsonify({'message': 'Invalid token format'}), 401
-        
+
         if request.method == 'GET':
             result = get_student_allowed_time(roll_no)
             if 'error' in result:
                 return jsonify({'message': result['error']}), 404
             return jsonify(result), 200
-        
+
         elif request.method == 'POST':
             data = request.get_json()
             new_allowed_time = data.get('allowed_time_minutes')
-            
+
             result = update_student_allowed_time(roll_no, new_allowed_time, device_id)
             if 'error' in result:
                 return jsonify({'message': result['error']}), 400
-            
+
             # Log the change
             log_security_event(
-                'allowed_time_updated', 
-                'admin', 
-                device_id, 
+                'allowed_time_updated',
+                'admin',
+                device_id,
                 get_remote_address(),
                 {
                     'roll_no': roll_no,
@@ -2889,7 +2675,7 @@ def manage_student_allowed_time_endpoint(roll_no):
                     'new_time': result.get('new_allowed_time')
                 }
             )
-            
+
             return jsonify({
                 'message': result['message'],
                 'roll_no': roll_no,
@@ -2897,7 +2683,7 @@ def manage_student_allowed_time_endpoint(roll_no):
                 'new_allowed_time': result.get('new_allowed_time'),
                 'updated_at': get_ist_now().isoformat()
             }), 200
-            
+
     except Exception as e:
         print(f"❌ Error in manage_student_allowed_time: {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
@@ -2911,16 +2697,16 @@ def reset_student_allowed_time_endpoint(roll_no):
             device_id, user_role = identity_string.split(':', 1)
             if user_role != 'admin':
                 return jsonify({'message': 'Admin access required'}), 403
-        
+
         result = reset_student_allowed_time(roll_no, device_id)
         if 'error' in result:
             return jsonify({'message': result['error']}), 404
-        
+
         # Log the reset
         log_security_event(
-            'allowed_time_reset', 
-            'admin', 
-            device_id, 
+            'allowed_time_reset',
+            'admin',
+            device_id,
             get_remote_address(),
             {
                 'roll_no': roll_no,
@@ -2928,7 +2714,7 @@ def reset_student_allowed_time_endpoint(roll_no):
                 'previous_time': result.get('previous_time', 480)
             }
         )
-        
+
         return jsonify({
             'message': result['message'],
             'roll_no': roll_no,
@@ -2936,7 +2722,7 @@ def reset_student_allowed_time_endpoint(roll_no):
             'current_allowed_time': 480,
             'reset_at': get_ist_now().isoformat()
         }), 200
-        
+
     except Exception as e:
         print(f"❌ Error in reset_student_allowed_time: {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
@@ -2950,15 +2736,15 @@ def sync_canteen_visits():
         if ':' in identity_string:
             device_id, user_role = identity_string.split(':', 1)
             user_hostel = user_role.split('_')[1].upper() if '_' in user_role else 'ALL'
-        
+
         data = request.get_json()
         visits = data.get('visits', [])
-        
+
         results = []
         for visit in visits:
             roll_no = visit.get('roll_no')
             original_timestamp = visit.get('original_timestamp')
-            
+
             # FIXED:
             if original_timestamp:
                 # Convert UTC timestamp to IST properly
@@ -2966,16 +2752,16 @@ def sync_canteen_visits():
                 now = utc_time.astimezone(INDIA_TZ)
             else:
                 now = datetime.now(INDIA_TZ)
-            
+
             student = db.students.find_one({'roll_no': roll_no})
-            
+
             if not student:
                 results.append({'success': False, 'roll_no': roll_no, 'error': 'Student not found'})
                 continue
-            
+
             student_hostel = student.get('hostel', 'Unknown')
             is_unauthorized = student_hostel != user_hostel
-            
+
             visit_record = {
                 'roll_no': roll_no,
                 'student_hostel': student_hostel,
@@ -2990,18 +2776,18 @@ def sync_canteen_visits():
                 'day_of_week': now.strftime('%A'),
                 'offline_sync': True
             }
-            
+
             db.canteen_visits.insert_one(visit_record)
             results.append({'success': True, 'roll_no': roll_no})
-            
+
             if is_unauthorized:
                 _send_unauthorized_alert(visit_record)
-        
+
         return jsonify({'results': results}), 200
-        
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-        
+
 @app.route('/api/sync/students', methods=['GET'])
 @jwt_required()
 def sync_students():
@@ -3010,15 +2796,15 @@ def sync_students():
         identity_string = get_jwt_identity()
         if ':' in identity_string:
             device_id, user_role = identity_string.split(':', 1)
-        
+
         # Get query parameters
         hostel = request.args.get('hostel')
         limit = int(request.args.get('limit', 10000))
         fields = request.args.get('fields', 'roll_no,name,hostel')
-        
+
         # Build query based on role
         query = {}
-        
+
         # Filter by hostel if specified and user has hostel-specific role
         if hostel and '_' in user_role:
             query['hostel'] = hostel
@@ -3027,7 +2813,7 @@ def sync_students():
             if '_' in user_role:
                 user_hostel = user_role.split('_')[1].upper()
                 query['hostel'] = user_hostel
-        
+
         # Get only essential fields
         projection = {
             'roll_no': 1,
@@ -3035,10 +2821,10 @@ def sync_students():
             'hostel': 1,
             '_id': 0
         }
-        
+
         # Get students from database
         students = list(db.students.find(query, projection).limit(limit))
-        
+
         # Compress data for efficient transfer
         compressed_students = []
         for student in students:
@@ -3047,9 +2833,9 @@ def sync_students():
                 'name': student.get('name', ''),
                 'hostel': student.get('hostel', '')
             })
-        
+
         print(f"📱 Student sync: Sending {len(compressed_students)} students to device {device_id}")
-        
+
         return jsonify({
             'success': True,
             'count': len(compressed_students),
@@ -3058,7 +2844,7 @@ def sync_students():
             'hostel_filter': hostel if hostel else 'ALL',
             'timestamp': datetime.now(INDIA_TZ).isoformat()
         }), 200
-        
+
     except Exception as e:
         print(f"❌ Error in student sync: {e}")
         return jsonify({
@@ -3073,14 +2859,14 @@ def validate_offline_scan():
     try:
         data = request.get_json()
         roll_no = data.get('roll_no')
-        
+
         result = validate_student_offline(roll_no)
-        
+
         if result and result.get('valid'):
             return jsonify(result), 200
         else:
             return jsonify(result or {'valid': False, 'message': 'Student not found'}), 404
-            
+
     except Exception as e:
         print(f"❌ Error in offline validation: {e}")
         return jsonify({'valid': False, 'error': str(e)}), 500
@@ -3090,13 +2876,13 @@ def validate_offline_scan():
 def submit_feedback():
     try:
         data = request.get_json()
-        
+
         # Validate required fields
         required_fields = ['feedback', 'rating', 'category']
         for field in required_fields:
             if field not in data:
                 return jsonify({'message': f'Missing required field: {field}'}), 400
-        
+
         # Get user info from token
         identity_string = get_jwt_identity()
         user_info = {}
@@ -3106,7 +2892,7 @@ def submit_feedback():
                 'device_id': device_id,
                 'role': user_role
             }
-        
+
         # Create feedback record
         feedback_record = {
             'feedback_id': str(uuid.uuid4()),
@@ -3120,16 +2906,16 @@ def submit_feedback():
             'app_version': data.get('app_version', '2.0'),
             'status': 'pending_review'
         }
-        
+
         # Store in database (create feedback collection if it doesn't exist)
         if 'feedback' not in db.list_collection_names():
             db.create_collection('feedback')
             db.feedback.create_index([('timestamp', -1)])
             db.feedback.create_index([('category', 1)])
             db.feedback.create_index([('rating', 1)])
-        
+
         result = db.feedback.insert_one(feedback_record)
-        
+
         # Log the feedback submission
         log_security_event(
             'feedback_submitted',
@@ -3138,13 +2924,13 @@ def submit_feedback():
             get_remote_address(),
             {'feedback_id': feedback_record['feedback_id'], 'category': data['category']}
         )
-        
+
         return jsonify({
             'message': 'Feedback submitted successfully',
             'feedback_id': feedback_record['feedback_id'],
             'submitted_at': feedback_record['timestamp'].isoformat()
         }), 200
-        
+
     except Exception as e:
         print(f"❌ Error submitting feedback: {e}")
         return jsonify({'message': f'Error submitting feedback: {str(e)}'}), 500
@@ -3159,29 +2945,29 @@ def get_feedback():
             device_id, user_role = identity_string.split(':', 1)
             if user_role != 'admin':
                 return jsonify({'message': 'Admin access required'}), 403
-        
+
         # Get query parameters
         category = request.args.get('category')
         min_rating = request.args.get('min_rating', type=int)
         days = request.args.get('days', 30, type=int)
         limit = request.args.get('limit', 50, type=int)
-        
+
         # Build query
         query = {}
         if category:
             query['category'] = category
         if min_rating:
             query['rating'] = {'$gte': min_rating}
-        
+
         cutoff_date = datetime.now(INDIA_TZ) - timedelta(days=days)
         query['timestamp'] = {'$gte': cutoff_date}
-        
+
         # Get feedback with pagination
         feedback = list(db.feedback.find(
             query,
             {'_id': 0}
         ).sort('timestamp', -1).limit(limit))
-        
+
         # Get statistics
         stats = {
             'total_feedback': db.feedback.count_documents(query),
@@ -3189,11 +2975,11 @@ def get_feedback():
             'by_category': {},
             'by_rating': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
         }
-        
+
         if feedback:
             total_rating = sum(f['rating'] for f in feedback)
             stats['average_rating'] = round(total_rating / len(feedback), 1)
-            
+
             # Count by category
             for f in feedback:
                 category = f.get('category', 'Unknown')
@@ -3201,7 +2987,7 @@ def get_feedback():
                 rating = f.get('rating', 0)
                 if 1 <= rating <= 5:
                     stats['by_rating'][rating] = stats['by_rating'].get(rating, 0) + 1
-        
+
         return jsonify({
             'feedback': feedback,
             'statistics': stats,
@@ -3212,10 +2998,10 @@ def get_feedback():
                 'limit': limit
             }
         }), 200
-        
+
     except Exception as e:
         return jsonify({'message': f'Error retrieving feedback: {str(e)}'}), 500
-    
+
 @app.route('/api/students/hostel/<hostel>', methods=['GET'])
 @jwt_required()
 def get_students_by_hostel_endpoint(hostel):
@@ -3227,7 +3013,7 @@ def get_students_by_hostel_endpoint(hostel):
         identity_string = get_jwt_identity()
         if ':' in identity_string:
             device_id, user_role = identity_string.split(':', 1)
-            
+
             # Only allow security and canteen roles to access this endpoint
             if not (user_role.startswith('security_') or user_role.startswith('canteen_')):
                 return jsonify({
@@ -3237,14 +3023,14 @@ def get_students_by_hostel_endpoint(hostel):
                     'your_role': user_role,
                     'suggested_endpoint': '/api/sync/students' if user_role == 'admin' else 'Contact admin'
                 }), 403
-            
+
             print(f"📱 Student sync request: Hostel {hostel} by {user_role}")
-        
+
         # Get query parameters
         page = int(request.args.get('page', 1))
         page_size = int(request.args.get('page_size', 0))
         compress = request.args.get('compress', 'false').lower() == 'true'
-        
+
         # Validate hostel parameter
         valid_hostels = ['A', 'B', 'C', 'D', 'ALL']
         if hostel not in valid_hostels:
@@ -3254,10 +3040,10 @@ def get_students_by_hostel_endpoint(hostel):
                 'valid_hostels': valid_hostels,
                 'received_hostel': hostel
             }), 400
-        
+
         # Get students using service
         result = get_students_by_hostel(hostel, page, page_size)
-        
+
         # Prepare base response
         base_response = {
             'success': True,
@@ -3278,50 +3064,50 @@ def get_students_by_hostel_endpoint(hostel):
             'estimated_size_kb': (len(json.dumps(result['students'])) / 1024) if result['students'] else 0,
             'timestamp': get_ist_now().isoformat()
         }
-        
+
         # Handle compression if requested
         if compress and result['students']:
             try:
                 import gzip
                 import io
-                
+
                 full_response = {**base_response, 'students': result['students']}
                 students_json = json.dumps(full_response, cls=CustomJSONEncoder)
                 original_size = len(students_json)
                 compressed = gzip.compress(students_json.encode('utf-8'))
                 compressed_size = len(compressed)
                 compression_ratio = 100 - (compressed_size * 100 / original_size) if original_size > 0 else 0
-                
+
                 print(f"📦 Compression: {original_size/1024:.1f}KB → {compressed_size/1024:.1f}KB ({compression_ratio:.1f}% saved)")
-                
+
                 base_response.update({
                     'compression_applied': True,
                     'original_size_kb': round(original_size / 1024, 2),
                     'compressed_size_kb': round(compressed_size / 1024, 2),
                     'compression_ratio': f"{compression_ratio:.1f}%"
                 })
-                
+
                 response = make_response(compressed)
                 response.headers['Content-Type'] = 'application/gzip'
                 response.headers['Content-Encoding'] = 'gzip'
                 response.headers['X-Metadata'] = json.dumps(base_response)
                 response.headers['X-Student-Count'] = str(len(result['students']))
-                
+
                 return response
-                
+
             except Exception as compression_error:
                 print(f"⚠️ Compression failed, falling back to JSON: {compression_error}")
                 base_response['compression_failed'] = True
-        
+
         # Regular JSON response
         response_data = {**base_response, 'students': result['students']}
         return jsonify(response_data), 200
-        
+
     except Exception as e:
         print(f"❌ Error in get_students_by_hostel: {e}")
         import traceback
         traceback.print_exc()
-        
+
         return jsonify({
             'success': False,
             'message': f'Server error: {str(e)}',
@@ -3339,17 +3125,17 @@ def check_student_data_availability(hostel):
         identity_string = get_jwt_identity()
         if ':' in identity_string:
             device_id, user_role = identity_string.split(':', 1)
-            
+
             # Only for security and canteen
             if not (user_role.startswith('security_') or user_role.startswith('canteen_')):
                 return jsonify({
                     'available': False,
                     'message': 'Offline sync is only available for security and canteen staff'
                 }), 403
-        
+
         # Simple count of students in hostel
         student_count = db.students.count_documents({'hostel': hostel})
-        
+
         return jsonify({
             'available': True,
             'count': student_count,
@@ -3358,16 +3144,16 @@ def check_student_data_availability(hostel):
             'ready_for_offline': student_count > 0,
             'message': f'Hostel {hostel} has {student_count} students available for offline scanning'
         }), 200
-        
+
     except Exception as e:
         print(f"❌ Error checking student data: {e}")
         return jsonify({
             'available': False,
             'count': 0,
             'error': str(e)
-        }), 200    
-    
-    
+        }), 200
+
+
 @app.route('/api/students/all-minimal', methods=['GET'])
 @jwt_required()
 def get_all_students_minimal_endpoint():
@@ -3379,45 +3165,45 @@ def get_all_students_minimal_endpoint():
         identity_string = get_jwt_identity()
         if ':' in identity_string:
             device_id, user_role = identity_string.split(':', 1)
-            
+
             # Only security and canteen need offline data
             if not (user_role.startswith('security_') or user_role.startswith('canteen_')):
                 return jsonify({
                     'message': 'Offline student data is only for security and canteen staff'
                 }), 403
-        
+
         students = get_all_students_minimal()
-        
+
         # Calculate approximate data size
         import sys
         sample_size = len(json.dumps(students[0])) if students else 0
         estimated_size_kb = (len(students) * sample_size) / 1024 if students else 0
-        
+
         response = {
             'success': True,
             'purpose': 'offline_caching_minimal',
             'count': len(students),
             'fields_included': ['roll_no', 'name', 'hostel'],
-            'fields_excluded': ['room_no', 'course', 'branch', 'contact_no', 'email', 
-                               'guardian_name', 'guardian_phone', 'home_address', 
+            'fields_excluded': ['room_no', 'course', 'branch', 'contact_no', 'email',
+                               'guardian_name', 'guardian_phone', 'home_address',
                                'fee_status', 'admission_date', 'in_out_records',
                                'disciplinary_records', 'medical_info'],
             'students': students,
             'estimated_size_kb': round(estimated_size_kb, 2),
             'timestamp': get_ist_now().isoformat()
         }
-        
+
         print(f"✅ MINIMAL offline sync: {len(students)} students, ~{estimated_size_kb:.1f}KB")
-        
+
         return jsonify(response), 200
-        
+
     except Exception as e:
         print(f"❌ Error in get_all_students_minimal: {e}")
         return jsonify({
             'success': False,
             'message': f'Server error: {str(e)}'
         }), 500
-        
+
 @app.route('/api/students/count', methods=['GET'])
 @jwt_required()
 def get_student_counts_endpoint():
@@ -3426,7 +3212,7 @@ def get_student_counts_endpoint():
         result = get_student_counts()
         result['timestamp'] = get_ist_now().isoformat()
         return jsonify(result), 200
-        
+
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -3436,9 +3222,9 @@ if __name__ == "__main__":
     print("📊 Version 2.0 - With Enhanced Analytics and Reporting")
     print("🔗 Available at: http://0.0.0.0:5000")
     print(f"🕒 DEBUG STARTUP - Server starting at UTC: {datetime.now(timezone.utc)}, IST: {datetime.now(INDIA_TZ)}")
-    
+
     print("🧹 Initializing data cleanup for records older than 6 months...")
-    
+
     # Run initial cleanup ONLY if database is connected
     if db_connected:
         try:

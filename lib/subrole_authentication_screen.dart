@@ -10,6 +10,8 @@ import 'biometric_auth_service.dart';
 import 'biometric_auth_widget.dart';
 import 'sync_service.dart';
 import 'student_db_helper.dart';
+import 'notification_service.dart';
+import 'socket_service.dart';
 
 const String kBaseUrl = "https://cn-project-app-dev.onrender.com";
 
@@ -825,6 +827,22 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
         await prefs.setString('current_hostel', hostel);
         await prefs.setString('hostel', hostel);
         await prefs.setString('username', data['username'] ?? subrole);
+        // Connect supervisor app to WebSocket for real-time alerts
+        SocketService.connect();
+
+        SocketService.listenForViolationAlerts((data) {
+          print('⚡ REAL-TIME VIOLATION RECEIVED: $data');
+        });
+
+        // 🔔 Subscribe supervisor device to its hostel FCM topic
+        if (widget.mainRole == 'security') {
+          try {
+            await NotificationService.subscribeToSupervisorHostel(hostel);
+            print('🔔 Supervisor FCM topic subscription successful: $hostel');
+          } catch (e) {
+            print('❌ Supervisor FCM topic subscription failed: $e');
+          }
+        }
         
         // ⭐ VERIFY SAVED DATA
         print('🔍 DEBUG: ✅ Authentication successful for $subrole');

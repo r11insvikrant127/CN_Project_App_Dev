@@ -49,8 +49,6 @@ Future<void> main() async {
   // 🔥 Initialize Firebase Cloud Messaging
   await NotificationService.initialize(notificationPlugin);
   
-  await NotificationService.subscribeToSupervisorHostel('A');
-  
   await BiometricAuthService.init();
 
   runApp(const MyApp());

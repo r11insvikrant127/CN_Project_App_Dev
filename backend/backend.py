@@ -127,7 +127,33 @@ def initialize_mongodb_connection():
 db_connected = initialize_mongodb_connection()
 
 jwt = JWTManager(app)
+@jwt.unauthorized_loader
+def jwt_unauthorized_callback(reason):
+    print(f"❌ JWT UNAUTHORIZED: {reason}")
+    return jsonify({
+        'message': 'JWT unauthorized',
+        'reason': reason
+    }), 401
 
+
+@jwt.invalid_token_loader
+def jwt_invalid_token_callback(reason):
+    print(f"❌ JWT INVALID: {reason}")
+    return jsonify({
+        'message': 'JWT invalid',
+        'reason': reason
+    }), 401
+
+
+@jwt.expired_token_loader
+def jwt_expired_token_callback(jwt_header, jwt_payload):
+    print(
+        f"❌ JWT EXPIRED: "
+        f"identity={jwt_payload.get('sub')}"
+    )
+    return jsonify({
+        'message': 'JWT expired'
+    }), 401
 
 # CORRECTED: Initialize rate limiter
 limiter = Limiter(

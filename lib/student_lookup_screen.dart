@@ -749,6 +749,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen>
           'Device-Id': deviceId ?? '',
         },
       );
+      print('🔐 STUDENT API STATUS: ${response.statusCode}');
+      print('🔐 STUDENT API RESPONSE: ${response.body}');
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);

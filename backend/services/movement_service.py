@@ -16,6 +16,7 @@ from utils.db_utils import get_db
 
 # Import monitoring service for active checkout
 from services.monitoring_service import create_active_checkout
+from services.websocket_service import emit_movement_update
 
 
 def process_security_scan(user_role, data, db=None):
@@ -133,6 +134,17 @@ def _process_check_out(student, roll_no, now, user_role, is_offline_sync, db):
         movement_id=event_id,
         db=db
     )
+
+    emit_movement_update({
+        'type': 'student_movement_updated',
+        'roll_no': roll_no,
+        'student_name': student.get('name', 'Unknown'),
+        'hostel': student.get('hostel'),
+        'action': 'out',
+        'time': now.isoformat(),
+        'recorded_by': user_role,
+        'event_id': event_id,
+    })
 
     print(
         f"OUT MOVEMENT CREATED | "
@@ -420,6 +432,18 @@ def _process_check_in(student, roll_no, now, user_role, is_offline_sync, db):
     # Remove from active monitoring.
     db.active_checkouts.delete_one({
         '_id': active_checkout['_id']
+    })
+
+    emit_movement_update({
+        'type': 'student_movement_updated',
+        'roll_no': roll_no,
+        'student_name': student.get('name', 'Unknown'),
+        'hostel': student.get('hostel'),
+        'action': 'in',
+        'time': now.isoformat(),
+        'recorded_by': user_role,
+        'event_id': movement_id,
+        'time_spent_minutes': round(time_spent_minutes, 2),
     })
 
     print(

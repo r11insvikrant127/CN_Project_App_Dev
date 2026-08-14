@@ -836,11 +836,7 @@ class _SubroleAuthenticationScreenState extends State<SubroleAuthenticationScree
           hostel: hostel,
           accessToken: accessToken,
         );
-
-        SocketService.listenForViolationAlerts((data) {
-          print('⚡ REAL-TIME VIOLATION RECEIVED: $data');
-        });
-
+        
         // 🔔 Register this supervisor device's FCM token
         // Backend identifies the device from the authenticated JWT.
         if (subrole.startsWith('super_')) {

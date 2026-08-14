@@ -4,11 +4,11 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'scan_screen.dart';
 import 'monthly_analytics_screen.dart';
-import 'weekly_report_screen.dart';  
+import 'weekly_report_screen.dart';
 import 'predictive_analytics_screen.dart';
 import 'package:provider/provider.dart';
 import 'theme_toggle_widget.dart';
-import 'app_themes.dart'; 
+import 'app_themes.dart';
 import 'voice_command_mixin.dart';
 import 'local_db_helper.dart';
 import 'network_service.dart';
@@ -27,7 +27,8 @@ import 'profile_photo_service.dart';
 import 'profile_photo_dialog.dart';
 import '../main.dart'; // to access notificationPlugin
 import 'package:intl/intl.dart';
-
+import 'socket_service.dart';
+import 'dart:async';
 
 const String kBaseUrl = "https://cn-project-app-dev.onrender.com";
 
@@ -35,13 +36,15 @@ class StudentLookupScreen extends StatefulWidget {
   final String selectedRole;
   final String selectedHostel;
 
-  StudentLookupScreen({required this.selectedRole, required this.selectedHostel});
+  StudentLookupScreen(
+      {required this.selectedRole, required this.selectedHostel});
 
   @override
   _StudentLookupScreenState createState() => _StudentLookupScreenState();
 }
 
-class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCommandMixin {
+class _StudentLookupScreenState extends State<StudentLookupScreen>
+    with VoiceCommandMixin {
   final TextEditingController _rollNoController = TextEditingController();
   Map<String, dynamic>? _studentData;
   bool _isLoading = false;
@@ -51,40 +54,133 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
   final LocalDBHelper _localDB = LocalDBHelper();
   final SyncService _syncService = SyncService();
 
+  StreamSubscription<bool>? _networkSubscription;
+  late final void Function(dynamic data) _violationListener;
+  late final void Function(dynamic data) _movementUpdateListener;
+
   @override
   void initState() {
     super.initState();
     _loadUserInfo();
     _setupAutoSync();
+    _setupViolationListener();
+    _setupMovementUpdateListener();
   }
 
   void _setupAutoSync() {
-  // Auto-sync when connection is restored
-  NetworkService().onConnectionChange.listen((isOnline) async {
-    if (isOnline && mounted) {
-      print('🔍 DEBUG: Connection restored, triggering auto-sync');
-      final success = await _syncService.syncWithFeedback();
-      
-      if (success && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✅ All offline records synced successfully!'),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 3),
-          ),
-        );
-        
-        // Only refresh student data if we're currently viewing a student
-        if (_studentData != null && _rollNoController.text.isNotEmpty) {
-          _getStudentData(); // Reload student data to show updated movement records
+    // Auto-sync when connection is restored
+    _networkSubscription =
+        NetworkService().onConnectionChange.listen((isOnline) async {
+      if (isOnline && mounted) {
+        print('🔍 DEBUG: Connection restored, triggering auto-sync');
+
+        final success = await _syncService.syncWithFeedback();
+
+        if (success && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('✅ All offline records synced successfully!'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 3),
+            ),
+          );
+
+          if (_studentData != null && _rollNoController.text.isNotEmpty) {
+            await _getStudentData();
+          }
         }
-        // Don't refresh if no student is being viewed - this prevents the "Please enter roll number" message
       }
-    }
-  });
+    });
   }
 
+  void _setupViolationListener() {
+    _violationListener = (data) async {
+      print('🚨 REAL-TIME VIOLATION RECEIVED IN STUDENT LOOKUP: $data');
 
+      if (!mounted) return;
+
+      try {
+        final rollNo = data is Map ? data['roll_no']?.toString() : null;
+
+        final currentRollNo = _rollNoController.text.trim();
+
+        if (rollNo != null &&
+            currentRollNo.isNotEmpty &&
+            rollNo == currentRollNo) {
+          print(
+            '🔄 Refreshing currently displayed student: $currentRollNo',
+          );
+
+          await _getStudentData();
+
+          if (!mounted) return;
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                '🚨 Allowed-time violation detected. Student data updated.',
+              ),
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      } catch (e) {
+        print('❌ Error processing WebSocket violation: $e');
+      }
+    };
+
+    SocketService.listenForViolationAlerts(_violationListener);
+  }
+
+  void _setupMovementUpdateListener() {
+    _movementUpdateListener = (data) async {
+      print(
+        '🔄 REAL-TIME MOVEMENT UPDATE RECEIVED IN STUDENT LOOKUP: $data',
+      );
+
+      if (!mounted) return;
+
+      try {
+        final rollNo = data is Map ? data['roll_no']?.toString() : null;
+
+        if (rollNo == null || rollNo.isEmpty) {
+          print('⚠️ Movement update has no roll number');
+          return;
+        }
+
+        final currentRollNo = _rollNoController.text.trim();
+
+        // Refresh only if the currently displayed student
+        // is the student whose movement changed.
+        if (currentRollNo.isNotEmpty && rollNo == currentRollNo) {
+          print(
+            '🔄 Movement changed for displayed student: $currentRollNo',
+          );
+
+          await _getStudentData();
+
+          if (!mounted) return;
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '🔄 Student movement updated (${data['action']}).',
+              ),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+      } catch (e) {
+        print(
+          '❌ Error processing movement WebSocket update: $e',
+        );
+      }
+    };
+
+    SocketService.listenForMovementUpdates(
+      _movementUpdateListener,
+    );
+  }
 
   @override
   Map<String, VoidCallback> getVoiceCommands() {
@@ -141,22 +237,21 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     showVoiceHelp();
   }
 
-
   void _manualSync() async {
     final syncService = SyncService();
     final success = await syncService.enhancedSync();
-    
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(success ? 
-            '✅ All records synced successfully!' : 
-            '⚠️ Sync completed with some pending records'),
+          content: Text(success
+              ? '✅ All records synced successfully!'
+              : '⚠️ Sync completed with some pending records'),
           backgroundColor: success ? Colors.green : Colors.orange,
           duration: Duration(seconds: 3),
         ),
       );
-      
+
       // Refresh student data if viewing a student
       if (_studentData != null && _rollNoController.text.isNotEmpty) {
         _getStudentData();
@@ -201,10 +296,9 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
 
       // Show success dialog with options
       _showPDFSuccessDialog(filePath);
-
     } catch (e) {
       print('❌ PDF Generation Error: $e');
-      
+
       // Show error dialog
       showDialog(
         context: context,
@@ -234,7 +328,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     }
   }
 
-  Future<void> showDownloadCompleteNotification(String fileName, String path) async {
+  Future<void> showDownloadCompleteNotification(
+      String fileName, String path) async {
     final androidDetails = AndroidNotificationDetails(
       'download_channel',
       'Downloads',
@@ -245,8 +340,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
       ticker: 'Download complete',
     );
 
-    final notificationDetails =
-        NotificationDetails(android: androidDetails);
+    final notificationDetails = NotificationDetails(android: androidDetails);
 
     await notificationPlugin.show(
       0,
@@ -256,8 +350,6 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
       payload: path,
     );
   }
-
-
 
   Future<void> _downloadPDF(String filePath) async {
     try {
@@ -299,9 +391,6 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     }
   }
 
-
-
-
   void _showPermissionDeniedDialog() {
     showDialog(
       context: context,
@@ -320,7 +409,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
             children: [
               Text('Storage permission is required to download PDF files.'),
               SizedBox(height: 10),
-              Text('Please grant the permission in app settings to enable downloads.'),
+              Text(
+                  'Please grant the permission in app settings to enable downloads.'),
             ],
           ),
           actions: [
@@ -381,9 +471,9 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                       size: 40,
                     ),
                   ),
-                  
+
                   SizedBox(height: 20),
-                  
+
                   // Title
                   Text(
                     'PDF Generated Successfully!',
@@ -394,22 +484,25 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                     ),
                     textAlign: TextAlign.center,
                   ),
-                  
+
                   SizedBox(height: 12),
-                  
+
                   // Description
                   Text(
                     'Your movement logs PDF has been generated and is ready to use.',
                     style: TextStyle(
                       fontSize: 14,
-                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withOpacity(0.7),
                       height: 1.4,
                     ),
                     textAlign: TextAlign.center,
                   ),
-                  
+
                   SizedBox(height: 24),
-                  
+
                   // Action Buttons - Fixed overflow by using Wrap or Column
                   LayoutBuilder(
                     builder: (context, constraints) {
@@ -492,16 +585,19 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                       }
                     },
                   ),
-                  
+
                   SizedBox(height: 16),
-                  
+
                   // Close Button
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(),
                     child: Text(
                       'Close',
                       style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.6),
                       ),
                     ),
                   ),
@@ -567,7 +663,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     try {
       final file = File(filePath);
       final bytes = await file.readAsBytes();
-      
+
       await Printing.layoutPdf(
         onLayout: (format) async => bytes,
       );
@@ -612,8 +708,9 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
   }
 
   void _showVoiceHelp() {
-    String commands = 'Available commands: "search student", "scan qr", "analytics", "ai analytics", "logout", "go back", "help", "clear", "sync records", "generate pdf", "dark theme", "light theme", "toggle theme"';
-    
+    String commands =
+        'Available commands: "search student", "scan qr", "analytics", "ai analytics", "logout", "go back", "help", "clear", "sync records", "generate pdf", "dark theme", "light theme", "toggle theme"';
+
     if (widget.selectedRole.startsWith('super_')) {
       commands += ', "weekly report"';
     }
@@ -621,7 +718,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     if (widget.selectedRole.startsWith('security_')) {
       commands += ', "check in", "check out"';
     }
-    
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(commands),
@@ -658,7 +755,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
       String? deviceId = prefs.getString('device_id');
 
       final response = await http.get(
-        Uri.parse('$kBaseUrl/api/student/${_rollNoController.text}/${widget.selectedRole}'),
+        Uri.parse(
+            '$kBaseUrl/api/student/${_rollNoController.text}/${widget.selectedRole}'),
         headers: {
           'Authorization': 'Bearer $token',
           'Device-Id': deviceId ?? '',
@@ -687,17 +785,21 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
         // Handle other errors with proper UI
         if (response.statusCode == 404) {
           setState(() {
-            _studentData = {'not_found': true, 'roll_no': _rollNoController.text};
+            _studentData = {
+              'not_found': true,
+              'roll_no': _rollNoController.text
+            };
           });
         } else {
           String errorMessage = 'Unknown error';
           try {
             final errorData = json.decode(response.body);
-            errorMessage = errorData['message'] ?? errorData['msg'] ?? 'Request failed';
+            errorMessage =
+                errorData['message'] ?? errorData['msg'] ?? 'Request failed';
           } catch (e) {
             errorMessage = 'Failed to load student data';
           }
-          
+
           // Show error in the UI instead of snackbar
           setState(() {
             _studentData = {'error': true, 'error_message': errorMessage};
@@ -721,8 +823,10 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     return buildVoiceCommandUI(
       Scaffold(
         appBar: AppBar(
-          title: Text('${widget.selectedRole.toUpperCase()} - Hostel ${widget.selectedHostel}'),
-          backgroundColor: AppThemes.getRoleColor(widget.selectedRole.split('_')[0], context),
+          title: Text(
+              '${widget.selectedRole.toUpperCase()} - Hostel ${widget.selectedHostel}'),
+          backgroundColor: AppThemes.getRoleColor(
+              widget.selectedRole.split('_')[0], context),
           actions: [
             // Voice command button
             buildVoiceCommandButton(),
@@ -738,7 +842,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
             ThemeToggleWidget(),
 
             // Keep only the most important icon visible, put others in menu
-            if (widget.selectedRole == 'admin' || widget.selectedRole.startsWith('super_'))
+            if (widget.selectedRole == 'admin' ||
+                widget.selectedRole.startsWith('super_'))
               IconButton(
                 icon: Icon(Icons.analytics),
                 onPressed: _navigateToAnalytics,
@@ -786,9 +891,10 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     }
 
     // PDF Generation option
-    if ((widget.selectedRole == 'admin' || widget.selectedRole.startsWith('super_')) && 
-        _studentData != null && 
-        _studentData!['in_out_records'] != null && 
+    if ((widget.selectedRole == 'admin' ||
+            widget.selectedRole.startsWith('super_')) &&
+        _studentData != null &&
+        _studentData!['in_out_records'] != null &&
         _studentData!['in_out_records'].length > 0) {
       menuItems.add(PopupMenuItem<String>(
         value: 'generate_pdf',
@@ -802,8 +908,9 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
       ));
     }
 
-    // AI Analytics for admin/super  
-    if (widget.selectedRole == 'admin' || widget.selectedRole.startsWith('super_')) {
+    // AI Analytics for admin/super
+    if (widget.selectedRole == 'admin' ||
+        widget.selectedRole.startsWith('super_')) {
       menuItems.add(PopupMenuItem<String>(
         value: 'ai_analytics',
         child: Row(
@@ -858,7 +965,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
       case 'ai_analytics':
         _navigateToAIAnalytics();
         break;
-      case 'manage_allowed_time': 
+      case 'manage_allowed_time':
         _navigateToAllowedTimeManagement();
         break;
       case 'weekly_report':
@@ -873,7 +980,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
   // Database debug methods
   void _resetDatabase() async {
     await _localDB.resetDatabase();
-    
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Database reset successfully'),
@@ -886,15 +993,16 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     final pendingScans = await _localDB.getPendingSecurityScans();
     final pendingVisits = await _localDB.getPendingCanteenVisits();
     final totalPending = await _localDB.getPendingRecordsCount();
-    
+
     print('🔍 DEBUG: Database Contents:');
     print('🔍 DEBUG: Total pending records: $totalPending');
     print('🔍 DEBUG: Pending scans: ${pendingScans.length}');
-    
+
     for (var scan in pendingScans) {
-      print('  - ID: ${scan['id']}, Roll: ${scan['roll_no']}, Action: ${scan['action']}, Synced: ${scan['is_synced']}');
+      print(
+          '  - ID: ${scan['id']}, Roll: ${scan['roll_no']}, Action: ${scan['action']}, Synced: ${scan['is_synced']}');
     }
-    
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('DB Check: $totalPending pending records'),
@@ -906,20 +1014,22 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
   void _navigateToAnalytics() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => MonthlyAnalyticsScreen(
-        userRole: widget.selectedRole,
-        userHostel: widget.selectedHostel,
-      )),
+      MaterialPageRoute(
+          builder: (context) => MonthlyAnalyticsScreen(
+                userRole: widget.selectedRole,
+                userHostel: widget.selectedHostel,
+              )),
     );
   }
 
   void _navigateToAIAnalytics() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => PredictiveAnalyticsScreen(
-        userRole: widget.selectedRole,
-        userHostel: widget.selectedHostel,
-      )),
+      MaterialPageRoute(
+          builder: (context) => PredictiveAnalyticsScreen(
+                userRole: widget.selectedRole,
+                userHostel: widget.selectedHostel,
+              )),
     );
   }
 
@@ -932,18 +1042,19 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
 
   void _navigateToAllowedTimeManagement() {
     if (_studentData == null) return;
-    
+
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => AllowedTimeManagementScreen(
-          rollNo: _studentData!['roll_no'], // Pass the current student's roll number
-          studentName: _studentData!['name'] ?? 'Unknown', // Optional: pass name for better UX
+          rollNo: _studentData![
+              'roll_no'], // Pass the current student's roll number
+          studentName: _studentData!['name'] ??
+              'Unknown', // Optional: pass name for better UX
         ),
       ),
     );
   }
-
 
   void _showProfilePhotoDialog() {
     showDialog(
@@ -1004,7 +1115,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                           child: Center(
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                              valueColor:
+                                  AlwaysStoppedAnimation<Color>(Colors.white),
                             ),
                           ),
                         );
@@ -1090,16 +1202,21 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                             controller: _rollNoController,
                             decoration: InputDecoration(
                               labelText: 'Enter Roll Number',
-                              prefixIcon: Icon(Icons.search, color: Colors.blue),
+                              prefixIcon:
+                                  Icon(Icons.search, color: Colors.blue),
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(8),
                                 borderSide: BorderSide.none,
                               ),
                               filled: true,
                               fillColor: Theme.of(context).colorScheme.surface,
-                              contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                              contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 14),
                               labelStyle: TextStyle(
-                                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withOpacity(0.7),
                               ),
                             ),
                             style: TextStyle(
@@ -1117,15 +1234,14 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                           ),
                           child: IconButton(
                             onPressed: _getStudentData,
-                            icon: Icon(Icons.search, color: Colors.white, size: 24),
+                            icon: Icon(Icons.search,
+                                color: Colors.white, size: 24),
                             padding: EdgeInsets.all(12),
                           ),
                         ),
                       ],
                     ),
-
                     SizedBox(height: 12),
-
                     Container(
                       width: double.infinity,
                       decoration: BoxDecoration(
@@ -1156,13 +1272,12 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     );
   }
 
-
   // Add this helper method (only one version)
   Widget _buildDefaultHeaderPhoto() {
     // Show role-specific default icon
     IconData icon;
     Color iconColor;
-    
+
     switch (widget.selectedRole.toLowerCase()) {
       case 'admin':
         icon = Icons.admin_panel_settings;
@@ -1193,7 +1308,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
         icon = Icons.person;
         iconColor = Colors.white;
     }
-    
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.white.withOpacity(0.3),
@@ -1209,18 +1324,23 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     );
   }
 
-
-
   Widget _buildContentSection() {
     if (_isLoading) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(strokeWidth: 3, valueColor: AlwaysStoppedAnimation(Colors.blue)),
+            CircularProgressIndicator(
+                strokeWidth: 3,
+                valueColor: AlwaysStoppedAnimation(Colors.blue)),
             SizedBox(height: 16),
-            Text('Loading student data...', 
-                 style: TextStyle(fontSize: 16, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7))),
+            Text('Loading student data...',
+                style: TextStyle(
+                    fontSize: 16,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withOpacity(0.7))),
           ],
         ),
       );
@@ -1243,23 +1363,26 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.person_search, size: 80, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+            Icon(Icons.person_search,
+                size: 80,
+                color:
+                    Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
             SizedBox(height: 16),
             Text(
               'Enter roll number to search student',
               style: TextStyle(
-                fontSize: 18, 
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7), 
-                fontWeight: FontWeight.w500
-              ),
+                  fontSize: 18,
+                  color:
+                      Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                  fontWeight: FontWeight.w500),
             ),
             SizedBox(height: 8),
             Text(
               'or use QR code scanner',
               style: TextStyle(
-                fontSize: 14, 
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5)
-              ),
+                  fontSize: 14,
+                  color:
+                      Theme.of(context).colorScheme.onSurface.withOpacity(0.5)),
             ),
           ],
         ),
@@ -1269,13 +1392,13 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     String mainRole = widget.selectedRole.split('_')[0];
 
     // For Security and Canteen roles with same-hostel students, show simplified view
-    if ((mainRole == 'security' || mainRole == 'canteen') && 
+    if ((mainRole == 'security' || mainRole == 'canteen') &&
         _studentData!['belongs_to_hostel'] == true) {
       return _buildSimpleVerificationView();
     }
 
     // For access denied or different hostel
-    if ((mainRole == 'security' || mainRole == 'canteen') && 
+    if ((mainRole == 'security' || mainRole == 'canteen') &&
         _studentData!['belongs_to_hostel'] == false) {
       return _buildAccessDeniedView();
     }
@@ -1291,7 +1414,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
         ],
       ),
     );
-  } 
+  }
 
   Widget _buildStudentNotFoundView() {
     return SingleChildScrollView(
@@ -1311,7 +1434,10 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
           SizedBox(height: 24),
           Text(
             'Student Not Found',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.orange[800]),
+            style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.orange[800]),
           ),
           SizedBox(height: 16),
           Container(
@@ -1393,7 +1519,10 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
           SizedBox(height: 24),
           Text(
             'Unable to Load Data',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.red[800]),
+            style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.red[800]),
           ),
           SizedBox(height: 16),
           Container(
@@ -1408,7 +1537,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                 Icon(Icons.warning_amber, size: 48, color: Colors.red),
                 SizedBox(height: 16),
                 Text(
-                  _studentData!['error_message'] ?? 'An error occurred while loading student data',
+                  _studentData!['error_message'] ??
+                      'An error occurred while loading student data',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 16,
@@ -1467,7 +1597,10 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
           SizedBox(height: 24),
           Text(
             'Student Verified',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green[800]),
+            style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.green[800]),
           ),
           SizedBox(height: 16),
           Container(
@@ -1495,7 +1628,10 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                   'Access granted for ${mainRole} operations',
                   style: TextStyle(
                     fontSize: 14,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withOpacity(0.7),
                   ),
                   textAlign: TextAlign.center,
                 ),
@@ -1506,7 +1642,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                 Text(
                   'Student: ${_studentData!['name'] ?? 'Unknown'}',
                   style: TextStyle(
-                    fontSize: 16, 
+                    fontSize: 16,
                     fontWeight: FontWeight.w500,
                     color: Theme.of(context).colorScheme.onSurface,
                   ),
@@ -1515,16 +1651,20 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                 Text(
                   'Roll No: ${_studentData!['roll_no'] ?? 'N/A'}',
                   style: TextStyle(
-                    fontSize: 14, 
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)
-                  ),
+                      fontSize: 14,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withOpacity(0.7)),
                 ),
                 Text(
                   'Hostel: ${_studentData!['hostel'] ?? 'N/A'}',
                   style: TextStyle(
-                    fontSize: 14, 
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)
-                  ),
+                      fontSize: 14,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withOpacity(0.7)),
                 ),
               ],
             ),
@@ -1570,7 +1710,10 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
           SizedBox(height: 24),
           Text(
             'Access Denied',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.red[800]),
+            style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.red[800]),
           ),
           SizedBox(height: 16),
           Container(
@@ -1586,7 +1729,10 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                 SizedBox(height: 12),
                 Text(
                   _deniedMessage,
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Colors.red[800]),
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.red[800]),
                   textAlign: TextAlign.center,
                 ),
                 SizedBox(height: 8),
@@ -1635,7 +1781,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
             Text(
               'Security Actions',
               style: TextStyle(
-                fontSize: 18, 
+                fontSize: 18,
                 fontWeight: FontWeight.bold,
                 color: Theme.of(context).colorScheme.onSurface,
               ),
@@ -1647,7 +1793,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                   child: ElevatedButton.icon(
                     onPressed: () => _performSecurityAction('out'),
                     icon: Icon(Icons.exit_to_app, color: Colors.white),
-                    label: Text('Check Out', style: TextStyle(color: Colors.white)),
+                    label: Text('Check Out',
+                        style: TextStyle(color: Colors.white)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.orange,
                       padding: EdgeInsets.symmetric(vertical: 15),
@@ -1659,7 +1806,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                   child: ElevatedButton.icon(
                     onPressed: () => _performSecurityAction('in'),
                     icon: Icon(Icons.login, color: Colors.white),
-                    label: Text('Check In', style: TextStyle(color: Colors.white)),
+                    label:
+                        Text('Check In', style: TextStyle(color: Colors.white)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green,
                       padding: EdgeInsets.symmetric(vertical: 15),
@@ -1688,12 +1836,9 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
           role: widget.selectedRole,
           timestamp: DateTime.now(),
         );
-        
-        _showActionResultDialog(
-          true, 
-          'Saved Offline', 
-          '${action == 'out' ? 'Check Out' : 'Check In'} saved locally.\nWill sync automatically when online.'
-        );
+
+        _showActionResultDialog(true, 'Saved Offline',
+            '${action == 'out' ? 'Check Out' : 'Check In'} saved locally.\nWill sync automatically when online.');
         return;
       }
 
@@ -1721,10 +1866,10 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
           true,
           'Success',
           '${action == 'out' ? 'Check out' : 'Check in'} successful!\n'
-          'Time: ${_formatDateTimeForDisplay(result['time'])}\n'
-          'Time spent: ${_formatDuration(result['time_spent_minutes'] ?? 'N/A')}',
+              'Time: ${_formatDateTimeForDisplay(result['time'])}\n'
+              'Time spent: ${_formatDuration(result['time_spent_minutes'] ?? 'N/A')}',
         );
-        
+
         // Refresh student data to show updated movement records
         _getStudentData();
       } else {
@@ -1748,12 +1893,9 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
           role: widget.selectedRole,
           timestamp: DateTime.now(),
         );
-        
-        _showActionResultDialog(
-          true, 
-          'Saved Offline', 
-          'Network issue. Action saved locally.\nWill sync when online.\nError: $errorMessage'
-        );
+
+        _showActionResultDialog(true, 'Saved Offline',
+            'Network issue. Action saved locally.\nWill sync when online.\nError: $errorMessage');
       }
     } catch (e) {
       // Any error - fallback to local save
@@ -1763,12 +1905,9 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
         role: widget.selectedRole,
         timestamp: DateTime.now(),
       );
-      
-      _showActionResultDialog(
-        true, 
-        'Saved Offline', 
-        'Action saved locally due to error.\nWill sync when online.\nError: $e'
-      );
+
+      _showActionResultDialog(true, 'Saved Offline',
+          'Action saved locally due to error.\nWill sync when online.\nError: $e');
     }
   }
 
@@ -1799,7 +1938,9 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                   width: 80,
                   height: 80,
                   decoration: BoxDecoration(
-                    color: success ? Colors.green.withOpacity(0.1) : Colors.orange.withOpacity(0.1),
+                    color: success
+                        ? Colors.green.withOpacity(0.1)
+                        : Colors.orange.withOpacity(0.1),
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
@@ -1808,9 +1949,9 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                     color: success ? Colors.green : Colors.orange,
                   ),
                 ),
-                
+
                 SizedBox(height: 20),
-                
+
                 // Title
                 Text(
                   title,
@@ -1820,21 +1961,24 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                     color: success ? Colors.green[800] : Colors.orange[800],
                   ),
                 ),
-                
+
                 SizedBox(height: 12),
-                
+
                 // Message
                 Text(
                   message,
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 16,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.8),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withOpacity(0.8),
                   ),
                 ),
-                
+
                 SizedBox(height: 20),
-                
+
                 // Action Button
                 SizedBox(
                   width: double.infinity,
@@ -1852,7 +1996,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                     ),
                     child: Text(
                       'OK',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                     ),
                   ),
                 ),
@@ -1922,9 +2067,15 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                         ),
                       ),
                       SizedBox(height: 6),
-                      _buildInfoChip(Icons.badge, 'Roll No: ${_studentData!['roll_no']?.toString() ?? 'N/A'}', Colors.blue),
+                      _buildInfoChip(
+                          Icons.badge,
+                          'Roll No: ${_studentData!['roll_no']?.toString() ?? 'N/A'}',
+                          Colors.blue),
                       SizedBox(height: 4),
-                      _buildInfoChip(Icons.home, 'Hostel: ${_studentData!['hostel']?.toString() ?? 'N/A'}', Colors.green),
+                      _buildInfoChip(
+                          Icons.home,
+                          'Hostel: ${_studentData!['hostel']?.toString() ?? 'N/A'}',
+                          Colors.green),
                     ],
                   ),
                 ),
@@ -1952,7 +2103,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
           SizedBox(width: 6),
           Text(
             text,
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: color),
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.w500, color: color),
           ),
         ],
       ),
@@ -1962,67 +2114,78 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
   List<Widget> _buildStudentDetailsList() {
     List<Widget> widgets = [];
     String mainRole = widget.selectedRole.split('_')[0];
-    
+
     widgets.add(_buildSectionCard(
       title: 'Basic Information',
       icon: Icons.info_outline,
       iconColor: Colors.blue,
       children: [
-        _buildInfoItemWithIcon(Icons.meeting_room, 'Room Number', _studentData!['room_no']?.toString()),
-        _buildInfoItemWithIcon(Icons.school, 'Course', _studentData!['course']?.toString()),
-        _buildInfoItemWithIcon(Icons.calendar_today, 'Academic Year', _studentData!['academic_year']?.toString()),
-        _buildInfoItemWithIcon(Icons.business_center, 'Branch', _studentData!['branch']?.toString()),
+        _buildInfoItemWithIcon(Icons.meeting_room, 'Room Number',
+            _studentData!['room_no']?.toString()),
+        _buildInfoItemWithIcon(
+            Icons.school, 'Course', _studentData!['course']?.toString()),
+        _buildInfoItemWithIcon(Icons.calendar_today, 'Academic Year',
+            _studentData!['academic_year']?.toString()),
+        _buildInfoItemWithIcon(Icons.business_center, 'Branch',
+            _studentData!['branch']?.toString()),
       ],
     ));
-    
+
     if (mainRole == 'super' || mainRole == 'admin') {
       widgets.add(_buildSectionCard(
         title: 'Contact Information',
         icon: Icons.contact_phone,
         iconColor: Colors.green,
         children: [
-          _buildInfoItemWithIcon(Icons.phone, 'Contact Number', _studentData!['contact_no']?.toString()),
+          _buildInfoItemWithIcon(Icons.phone, 'Contact Number',
+              _studentData!['contact_no']?.toString()),
           if (mainRole == 'admin') ...[
-            _buildInfoItemWithIcon(Icons.email, 'Email Address', _studentData!['email']?.toString()),
-            _buildInfoItemWithIcon(Icons.family_restroom, 'Guardian Name', _studentData!['guardian_name']?.toString()),
-            _buildInfoItemWithIcon(Icons.phone_android, 'Guardian Phone', _studentData!['guardian_phone']?.toString()),
+            _buildInfoItemWithIcon(Icons.email, 'Email Address',
+                _studentData!['email']?.toString()),
+            _buildInfoItemWithIcon(Icons.family_restroom, 'Guardian Name',
+                _studentData!['guardian_name']?.toString()),
+            _buildInfoItemWithIcon(Icons.phone_android, 'Guardian Phone',
+                _studentData!['guardian_phone']?.toString()),
           ],
         ],
       ));
     }
-    
+
     if (mainRole == 'admin') {
       widgets.add(_buildSectionCard(
         title: 'Administrative Information',
         icon: Icons.admin_panel_settings,
         iconColor: Colors.purple,
         children: [
-          _buildInfoItemWithIcon(Icons.home_work, 'Home Address', _studentData!['home_address']?.toString()),
-          _buildInfoItemWithIcon(Icons.payment, 'Fee Status', _studentData!['fee_status']?.toString()),
+          _buildInfoItemWithIcon(Icons.home_work, 'Home Address',
+              _studentData!['home_address']?.toString()),
+          _buildInfoItemWithIcon(Icons.payment, 'Fee Status',
+              _studentData!['fee_status']?.toString()),
           // In the _buildStudentDetailsList method, update the admission date line:
-          _buildInfoItemWithIcon(Icons.date_range, 'Admission Date',_formatDate(_studentData!['admission_date'])?.toString()),
+          _buildInfoItemWithIcon(Icons.date_range, 'Admission Date',
+              _formatDate(_studentData!['admission_date'])?.toString()),
         ],
       ));
     }
-    
-    if ((mainRole == 'admin' || mainRole == 'super') && 
-        _studentData!['in_out_records'] != null && 
+
+    if ((mainRole == 'admin' || mainRole == 'super') &&
+        _studentData!['in_out_records'] != null &&
         _studentData!['in_out_records'].length > 0) {
       widgets.add(_buildInOutRecordsSection());
     }
-    
-    if ((mainRole == 'admin' || mainRole == 'super') && 
-        _studentData!['disciplinary_records'] != null && 
+
+    if ((mainRole == 'admin' || mainRole == 'super') &&
+        _studentData!['disciplinary_records'] != null &&
         _studentData!['disciplinary_records'].length > 0) {
       widgets.add(_buildDisciplinaryRecordsSection());
     }
-    
-    if ((mainRole == 'admin' || mainRole == 'super') && 
-        _studentData!['medical_info'] != null && 
+
+    if ((mainRole == 'admin' || mainRole == 'super') &&
+        _studentData!['medical_info'] != null &&
         _studentData!['medical_info'].length > 0) {
       widgets.add(_buildMedicalInformationSection());
     }
-    
+
     return widgets;
   }
 
@@ -2093,7 +2256,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
 
   Widget _buildInfoItemWithIcon(IconData icon, String label, String? value) {
     if (value == null || value.isEmpty) return SizedBox.shrink();
-    
+
     return Container(
       margin: EdgeInsets.only(bottom: 16),
       padding: EdgeInsets.all(16),
@@ -2122,7 +2285,10 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withOpacity(0.6),
                     letterSpacing: 0.5,
                   ),
                 ),
@@ -2145,13 +2311,16 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
 
   Widget _buildInOutRecordsSection() {
     List<dynamic> records = _studentData!['in_out_records'];
-    
+
     return _buildSectionCard(
       title: 'Movement Records',
       icon: Icons.directions_walk,
       iconColor: Colors.orange,
       children: [
-        ...records.reversed.take(5).map<Widget>((record) => _buildInOutRecordItem(record)).toList(),
+        ...records.reversed
+            .take(5)
+            .map<Widget>((record) => _buildInOutRecordItem(record))
+            .toList(),
       ],
     );
   }
@@ -2159,25 +2328,33 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
   Widget _buildInOutRecordItem(Map<String, dynamic> record) {
     bool isCheckedOut = record['action'] == 'out';
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    
+
     return Container(
       margin: EdgeInsets.only(bottom: 12),
       padding: EdgeInsets.all(16),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: isCheckedOut 
+          colors: isCheckedOut
               ? [
-                  isDark ? Colors.orange[900]!.withOpacity(0.3) : Colors.orange[50]!,
-                  isDark ? Colors.orange[800]!.withOpacity(0.2) : Colors.orange[100]!,
+                  isDark
+                      ? Colors.orange[900]!.withOpacity(0.3)
+                      : Colors.orange[50]!,
+                  isDark
+                      ? Colors.orange[800]!.withOpacity(0.2)
+                      : Colors.orange[100]!,
                 ]
               : [
-                  isDark ? Colors.green[900]!.withOpacity(0.3) : Colors.green[50]!,
-                  isDark ? Colors.green[800]!.withOpacity(0.2) : Colors.green[100]!,
+                  isDark
+                      ? Colors.green[900]!.withOpacity(0.3)
+                      : Colors.green[50]!,
+                  isDark
+                      ? Colors.green[800]!.withOpacity(0.2)
+                      : Colors.green[100]!,
                 ],
         ),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isCheckedOut 
+          color: isCheckedOut
               ? (isDark ? Colors.orange[700]! : Colors.orange[200]!)
               : (isDark ? Colors.green[700]! : Colors.green[200]!),
         ),
@@ -2206,7 +2383,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
-                    color: isCheckedOut 
+                    color: isCheckedOut
                         ? (isDark ? Colors.orange[300]! : Colors.orange[800])
                         : (isDark ? Colors.green[300]! : Colors.green[800]),
                     letterSpacing: 0.5,
@@ -2216,26 +2393,29 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                 Text(
                   'Out: ${_formatDateTimeForDisplay(record['out_time'])}', // ← CHANGED
                   style: TextStyle(
-                    fontSize: 14, 
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)
-                  ),
+                      fontSize: 14,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withOpacity(0.7)),
                 ),
                 if (record['in_time'] != null)
                   Text(
                     'In: ${_formatDateTimeForDisplay(record['in_time'])}', // ← CHANGED
                     style: TextStyle(
-                      fontSize: 14, 
-                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)
-                    ),
+                        fontSize: 14,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.7)),
                   ),
                 if (record['time_spent_minutes'] != null)
                   Text(
                     'Duration: ${_formatDuration(record['time_spent_minutes'])}',
                     style: TextStyle(
-                      fontSize: 14, 
-                      fontWeight: FontWeight.bold, 
-                      color: isDark ? Colors.blue[300]! : Colors.blue[700]
-                    ),
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: isDark ? Colors.blue[300]! : Colors.blue[700]),
                   ),
               ],
             ),
@@ -2247,7 +2427,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
 
   Widget _buildDisciplinaryRecordsSection() {
     List<dynamic> records = _studentData!['disciplinary_records'];
-    
+
     return _buildSectionCard(
       title: 'Disciplinary Records',
       icon: Icons.warning_amber,
@@ -2256,20 +2436,21 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
         Text(
           'Total Records: ${records.length}',
           style: TextStyle(
-            fontSize: 14, 
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6), 
-            fontStyle: FontStyle.italic
-          ),
+              fontSize: 14,
+              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+              fontStyle: FontStyle.italic),
         ),
         SizedBox(height: 16),
-        ...records.map<Widget>((record) => _buildDisciplinaryRecordItem(record)).toList(),
+        ...records
+            .map<Widget>((record) => _buildDisciplinaryRecordItem(record))
+            .toList(),
       ],
     );
   }
 
   Widget _buildDisciplinaryRecordItem(Map<String, dynamic> record) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    
+
     return Container(
       margin: EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
@@ -2288,14 +2469,15 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
               children: [
                 Row(
                   children: [
-                    Icon(Icons.calendar_today, size: 16, color: isDark ? Colors.red[300]! : Colors.red[600]),
+                    Icon(Icons.calendar_today,
+                        size: 16,
+                        color: isDark ? Colors.red[300]! : Colors.red[600]),
                     SizedBox(width: 8),
                     Text(
                       _formatDate(record['date']) ?? 'Unknown Date',
                       style: TextStyle(
-                        fontWeight: FontWeight.bold, 
-                        color: isDark ? Colors.red[300]! : Colors.red[800]
-                      ),
+                          fontWeight: FontWeight.bold,
+                          color: isDark ? Colors.red[300]! : Colors.red[800]),
                     ),
                   ],
                 ),
@@ -2303,14 +2485,16 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                 // ✅ NEW CODE - REPLACE WITH THIS:
                 Row(
                   children: [
-                    Icon(Icons.access_time, size: 16, color: isDark ? Colors.red[300]! : Colors.red[600]),
+                    Icon(Icons.access_time,
+                        size: 16,
+                        color: isDark ? Colors.red[300]! : Colors.red[600]),
                     SizedBox(width: 4),
                     Text(
-                      _formatTime(record['time'] ?? record['date']) ?? 'Unknown Time', // ✅ FIXED
+                      _formatTime(record['time'] ?? record['date']) ??
+                          'Unknown Time', // ✅ FIXED
                       style: TextStyle(
-                        color: isDark ? Colors.red[300]! : Colors.red[700], 
-                        fontSize: 12
-                      ),
+                          color: isDark ? Colors.red[300]! : Colors.red[700],
+                          fontSize: 12),
                     ),
                   ],
                 ),
@@ -2360,7 +2544,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
 
   Widget _buildMedicalInformationSection() {
     List<dynamic> medicalInfo = _studentData!['medical_info'];
-    
+
     return _buildSectionCard(
       title: 'Medical Information',
       icon: Icons.medical_services,
@@ -2369,26 +2553,28 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
         Text(
           'Medical Records: ${medicalInfo.length}',
           style: TextStyle(
-            fontSize: 14, 
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6), 
-            fontStyle: FontStyle.italic
-          ),
+              fontSize: 14,
+              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+              fontStyle: FontStyle.italic),
         ),
         SizedBox(height: 16),
-        ...medicalInfo.map<Widget>((info) => _buildMedicalInfoItem(info)).toList(),
+        ...medicalInfo
+            .map<Widget>((info) => _buildMedicalInfoItem(info))
+            .toList(),
       ],
     );
   }
 
   Widget _buildMedicalInfoItem(Map<String, dynamic> info) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    
+
     return Container(
       margin: EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
         color: isDark ? Colors.teal[900]!.withOpacity(0.2) : Colors.teal[50],
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: isDark ? Colors.teal[700]! : Colors.teal[200]!),
+        border:
+            Border.all(color: isDark ? Colors.teal[700]! : Colors.teal[200]!),
       ),
       child: Padding(
         padding: EdgeInsets.all(16),
@@ -2397,15 +2583,16 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
           children: [
             Row(
               children: [
-                Icon(Icons.medical_services, size: 20, color: isDark ? Colors.teal[300]! : Colors.teal[600]),
+                Icon(Icons.medical_services,
+                    size: 20,
+                    color: isDark ? Colors.teal[300]! : Colors.teal[600]),
                 SizedBox(width: 8),
                 Text(
                   'Medical Record',
                   style: TextStyle(
-                    fontSize: 16, 
-                    fontWeight: FontWeight.bold, 
-                    color: isDark ? Colors.teal[300]! : Colors.teal[800]
-                  ),
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.teal[300]! : Colors.teal[800]),
                 ),
               ],
             ),
@@ -2424,7 +2611,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                 info['medication']!,
                 isDark ? Colors.blue[300]! : Colors.blue[400]!,
               ),
-            if (info['emergency_contact'] != null && info['emergency_contact'].isNotEmpty)
+            if (info['emergency_contact'] != null &&
+                info['emergency_contact'].isNotEmpty)
               _buildMedicalDetailItem(
                 Icons.emergency,
                 'Emergency Contact',
@@ -2437,7 +2625,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     );
   }
 
-  Widget _buildRecordDetailItem(IconData icon, String label, String value, Color color) {
+  Widget _buildRecordDetailItem(
+      IconData icon, String label, String value, Color color) {
     return Padding(
       padding: EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -2462,9 +2651,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                 Text(
                   value,
                   style: TextStyle(
-                    fontSize: 14, 
-                    color: Theme.of(context).colorScheme.onSurface
-                  ),
+                      fontSize: 14,
+                      color: Theme.of(context).colorScheme.onSurface),
                 ),
               ],
             ),
@@ -2474,14 +2662,17 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     );
   }
 
-  Widget _buildMedicalDetailItem(IconData icon, String label, String value, Color color) {
+  Widget _buildMedicalDetailItem(
+      IconData icon, String label, String value, Color color) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    
+
     return Container(
       margin: EdgeInsets.only(bottom: 12),
       padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: isDark ? Colors.black.withOpacity(0.3) : Colors.white.withOpacity(0.7),
+        color: isDark
+            ? Colors.black.withOpacity(0.3)
+            : Colors.white.withOpacity(0.7),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
@@ -2512,9 +2703,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
                 Text(
                   value,
                   style: TextStyle(
-                    fontSize: 14, 
-                    color: Theme.of(context).colorScheme.onSurface
-                  ),
+                      fontSize: 14,
+                      color: Theme.of(context).colorScheme.onSurface),
                 ),
               ],
             ),
@@ -2529,16 +2719,18 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
 
     try {
       DateTime? parsedDate;
-      
+
       // Handle MongoDB date format: {"$date": "2024-01-15T00:00:00Z"}
       if (dateTime is Map<String, dynamic> && dateTime.containsKey('\$date')) {
         String dateString = dateTime['\$date'];
-        parsedDate = DateTime.parse(dateString).toLocal(); // ✅ FIX: Convert to local time
+        parsedDate = DateTime.parse(dateString)
+            .toLocal(); // ✅ FIX: Convert to local time
       }
       // Handle string dates
       else if (dateTime is String) {
         if (dateTime.contains('T')) {
-          parsedDate = DateTime.parse(dateTime).toLocal(); // ✅ FIX: Convert to local time
+          parsedDate = DateTime.parse(dateTime)
+              .toLocal(); // ✅ FIX: Convert to local time
         } else {
           return dateTime; // Return as-is if it's already formatted
         }
@@ -2564,11 +2756,12 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
 
     try {
       DateTime? parsedDate;
-      
+
       // Handle GMT string format like "Sat, 29 Nov 2025 10:33:36 GMT"
       if (dateTime is String && dateTime.contains('GMT')) {
         // Use DateFormat to parse GMT format correctly
-        final formatter = DateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", 'en_US');
+        final formatter =
+            DateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", 'en_US');
         parsedDate = formatter.parseUtc(dateTime).toLocal();
       }
       // Handle regular string dates like "2025-11-29T10:33:36.228533"
@@ -2576,7 +2769,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
         parsedDate = DateTime.parse(dateTime).toLocal();
       }
       // Handle MongoDB date format
-      else if (dateTime is Map<String, dynamic> && dateTime.containsKey('\$date')) {
+      else if (dateTime is Map<String, dynamic> &&
+          dateTime.containsKey('\$date')) {
         String dateString = dateTime['\$date'];
         parsedDate = DateTime.parse(dateString).toLocal();
       }
@@ -2596,26 +2790,29 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     }
   }
 
-
   // ✅ NEW VERSION - PASTE THIS
   String _formatDate(dynamic dateValue) {
     if (dateValue == null) return 'N/A';
 
     try {
       DateTime? parsedDate;
-      
+
       // ✅ FIXED: Handle GMT string format like "Sun, 30 Nov 2025 04:37:37 GMT"
       if (dateValue is String && dateValue.contains('GMT')) {
         try {
           // Parse GMT string and convert to local time (IST)
-          final formatter = DateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", 'en_US');
-          parsedDate = formatter.parseUtc(dateValue).toLocal(); // Convert GMT to local time
+          final formatter =
+              DateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", 'en_US');
+          parsedDate = formatter
+              .parseUtc(dateValue)
+              .toLocal(); // Convert GMT to local time
         } catch (e) {
           print('❌ Error parsing GMT date: $dateValue, error: $e');
         }
       }
       // Handle MongoDB date format: {"$date": "2024-01-15T00:00:00Z"}
-      else if (dateValue is Map<String, dynamic> && dateValue.containsKey('\$date')) {
+      else if (dateValue is Map<String, dynamic> &&
+          dateValue.containsKey('\$date')) {
         String dateString = dateValue['\$date'];
         parsedDate = DateTime.parse(dateString).toLocal();
       }
@@ -2650,10 +2847,11 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
 
     try {
       DateTime? parsedDate;
-      
+
       // Handle GMT strings
       if (timeValue is String && timeValue.contains('GMT')) {
-        final formatter = DateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", 'en_US');
+        final formatter =
+            DateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", 'en_US');
         parsedDate = formatter.parseUtc(timeValue).toLocal();
       }
       // Handle full datetime strings
@@ -2683,16 +2881,20 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     if (duration == null) return 'N/A';
 
     try {
-      double minutes = duration is double ? duration : double.tryParse(duration.toString()) ?? 0.0;
+      double minutes = duration is double
+          ? duration
+          : double.tryParse(duration.toString()) ?? 0.0;
 
       // Format to 4 decimal places
       String formatted = minutes.toStringAsFixed(4);
 
       // Remove trailing zeros and decimal point if not needed
       if (formatted.contains('.')) {
-        formatted = formatted.replaceAll(RegExp(r'0*$'), ''); // Remove trailing zeros
+        formatted =
+            formatted.replaceAll(RegExp(r'0*$'), ''); // Remove trailing zeros
         if (formatted.endsWith('.')) {
-          formatted = formatted.substring(0, formatted.length - 1); // Remove trailing decimal
+          formatted = formatted.substring(
+              0, formatted.length - 1); // Remove trailing decimal
         }
       }
 
@@ -2706,13 +2908,13 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     // ⭐ ADD: Stop periodic sync
     final syncService = SyncService();
     syncService.stopPeriodicSync();
-    
+
     SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.remove('access_token');
     await prefs.remove('current_role');
     await prefs.remove('current_hostel');
     await prefs.remove('username');
-    
+
     Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
   }
 
@@ -2770,5 +2972,22 @@ class _StudentLookupScreenState extends State<StudentLookupScreen> with VoiceCom
     }
 
     return descriptions;
+  }
+
+  @override
+  void dispose() {
+    _networkSubscription?.cancel();
+
+    SocketService.removeViolationAlertListener(
+      _violationListener,
+    );
+
+    SocketService.removeMovementUpdateListener(
+      _movementUpdateListener,
+    );
+
+    _rollNoController.dispose();
+
+    super.dispose();
   }
 }

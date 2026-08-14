@@ -122,3 +122,42 @@ def emit_violation_alert(alert_data):
             f"❌ WebSocket alert emission failed: "
             f"{type(e).__name__}: {e}"
         )
+
+def emit_movement_update(movement_data):
+    """
+    Send a student movement update only to supervisors
+    belonging to the student's hostel.
+    """
+    try:
+        hostel = str(
+            movement_data.get('hostel', '')
+        ).strip().upper()
+
+        if not hostel:
+            print(
+                "❌ WebSocket movement update not sent: "
+                "student hostel missing"
+            )
+            return
+
+        room = f"hostel_{hostel}"
+
+        socketio.emit(
+            'student_movement_updated',
+            movement_data,
+            room=room
+        )
+
+        print(
+            f"🔌 WEBSOCKET MOVEMENT UPDATE EMITTED | "
+            f"Roll={movement_data.get('roll_no')} | "
+            f"Action={movement_data.get('action')} | "
+            f"Hostel={hostel} | "
+            f"Room={room}"
+        )
+
+    except Exception as e:
+        print(
+            f"❌ WebSocket movement update emission failed: "
+            f"{type(e).__name__}: {e}"
+        )

@@ -98,7 +98,6 @@ class SocketService {
     );
   }
 
-  /// Listen for allowed-time violation alerts.
   static void listenForViolationAlerts(
     void Function(dynamic data) callback,
   ) {
@@ -109,7 +108,9 @@ class SocketService {
       return;
     }
 
+    // Prevent duplicate listeners if the screen/listener is initialized again.
     _socket!.off('allowed_time_violation');
+
     _socket!.on(
       'allowed_time_violation',
       callback,
@@ -117,6 +118,48 @@ class SocketService {
 
     print(
       '👂 WebSocket violation listener registered',
+    );
+  }
+
+  static void listenForMovementUpdates(
+    void Function(dynamic data) callback,
+  ) {
+    if (_socket == null) {
+      print('⚠️ Cannot listen: WebSocket is not initialized');
+      return;
+    }
+
+    _socket!.off('student_movement_updated');
+
+    _socket!.on(
+      'student_movement_updated',
+      callback,
+    );
+
+    print('👂 WebSocket movement listener registered');
+  }
+
+  static void removeMovementUpdateListener(
+    void Function(dynamic data) callback,
+  ) {
+    _socket?.off(
+      'student_movement_updated',
+      callback,
+    );
+
+    print('👋 WebSocket movement listener removed');
+  }
+
+  static void removeViolationAlertListener(
+    void Function(dynamic data) callback,
+  ) {
+    _socket?.off(
+      'allowed_time_violation',
+      callback,
+    );
+
+    print(
+      '👋 WebSocket violation listener removed',
     );
   }
 

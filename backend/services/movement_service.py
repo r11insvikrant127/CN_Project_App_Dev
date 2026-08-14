@@ -37,6 +37,7 @@ def process_security_scan(user_role, data, db=None):
     # Extract data
     roll_no = data.get('roll_no')
     action = data.get('action')  # 'in' or 'out'
+    event_id = data.get('event_id') or str(uuid.uuid4())
     is_offline_sync = data.get('offline_sync', False)
     original_timestamp = data.get('original_timestamp')
     
@@ -75,16 +76,48 @@ def process_security_scan(user_role, data, db=None):
     
     # Process based on action
     if action == 'out':
-        return _process_check_out(student, roll_no, now, user_role, is_offline_sync, db)
+        return _process_check_out(student, roll_no, now, user_role, is_offline_sync,event_id, db)
     elif action == 'in':
-        return _process_check_in(student, roll_no, now, user_role, is_offline_sync, db)
+        return _process_check_in(student, roll_no, now, user_role, is_offline_sync,event_id, db)
     
     return {'message': 'Invalid action'}, 400
 
 
-def _process_check_out(student, roll_no, now, user_role, is_offline_sync, db):
+def _process_check_out(student, roll_no, now, user_role, is_offline_sync,event_id, db):
     """Process a check-out operation using movement_records."""
 
+    # Idempotency check
+    existing_event = db.movement_records.find_one({
+        'event_id': event_id
+    })
+    if existing_event:
+        if existing_event.get('roll_no') != roll_no:
+            return {
+                'success': False,
+                'message': 'Event ID already belongs to another student'
+            }, 409
+
+        if existing_event.get('action') == 'out':
+            return {
+                'success': True,
+                'message': 'Check out already recorded',
+                'student_name': student.get('name', 'Unknown'),
+                'roll_no': roll_no,
+                'time': (
+                    existing_event.get('out_time').strftime(
+                        '%Y-%m-%d %H:%M:%S'
+                    )
+                    if existing_event.get('out_time')
+                    else None
+                ),
+                'action': 'out',
+                'event_id': event_id,
+                'offline_sync': existing_event.get(
+                    'offline_sync', False
+                ),
+                'already_processed': True
+            }, 200
+            
     # Check whether the student already has an active checkout.
     active_checkout = db.active_checkouts.find_one({
         'roll_no': roll_no,
@@ -102,9 +135,6 @@ def _process_check_out(student, roll_no, now, user_role, is_offline_sync, db):
                 else None
             )
         }, 400
-
-    # Generate a unique movement ID.
-    event_id = str(uuid.uuid4())
 
     # Create movement record.
     movement_record = {
@@ -164,8 +194,40 @@ def _process_check_out(student, roll_no, now, user_role, is_offline_sync, db):
     }, 200
 
 
-def _process_check_in(student, roll_no, now, user_role, is_offline_sync, db):
+
+def _process_check_in(student, roll_no, now, user_role, is_offline_sync,event_id, db):
     """Process a check-in operation using movement_records."""
+
+    # Idempotency check:
+    # If this exact IN event was already processed,
+    # return the original successful result.
+    existing_in_event = db.movement_records.find_one({
+        'in_event_id': event_id,
+        'roll_no': roll_no
+    })
+
+    if existing_in_event:
+        return {
+            'success': True,
+            'message': 'Check in already recorded',
+            'student_name': student.get('name', 'Unknown'),
+            'roll_no': roll_no,
+            'time': (
+                existing_in_event.get('in_time').isoformat()
+                if existing_in_event.get('in_time')
+                else None
+            ),
+            'action': 'in',
+            'event_id': event_id,
+            'movement_id': existing_in_event.get('event_id'),
+            'time_spent_minutes': existing_in_event.get(
+                'time_spent_minutes', 0
+            ),
+            'offline_sync': existing_in_event.get(
+                'offline_sync', False
+            ),
+            'already_processed': True
+        }, 200
 
     # Find the active checkout.
     active_checkout = db.active_checkouts.find_one({
@@ -257,6 +319,7 @@ def _process_check_in(student, roll_no, now, user_role, is_offline_sync, db):
         {
             '$set': {
                 'in_time': now,
+                'in_event_id': event_id,
                 'time_spent_minutes': round(time_spent_minutes, 4),
                 'action': 'in',
                 'status': 'inside',
@@ -457,7 +520,8 @@ def _process_check_in(student, roll_no, now, user_role, is_offline_sync, db):
         'roll_no': roll_no,
         'time': now.isoformat(),
         'action': 'in',
-        'event_id': movement_id,
+        'event_id': event_id,
+        'movement_id': movement_id,
         'time_spent_minutes': round(time_spent_minutes, 2),
         'offline_sync': is_offline_sync,
         'allowed_time_minutes': max_allowed_time,

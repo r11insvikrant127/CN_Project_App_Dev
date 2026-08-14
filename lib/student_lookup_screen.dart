@@ -29,6 +29,7 @@ import '../main.dart'; // to access notificationPlugin
 import 'package:intl/intl.dart';
 import 'socket_service.dart';
 import 'dart:async';
+import 'package:uuid/uuid.dart';
 
 const String kBaseUrl = "https://cn-project-app-dev.onrender.com";
 
@@ -112,17 +113,6 @@ class _StudentLookupScreenState extends State<StudentLookupScreen>
           );
 
           await _getStudentData();
-
-          if (!mounted) return;
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                '🚨 Allowed-time violation detected. Student data updated.',
-              ),
-              duration: Duration(seconds: 3),
-            ),
-          );
         }
       } catch (e) {
         print('❌ Error processing WebSocket violation: $e');
@@ -148,7 +138,8 @@ class _StudentLookupScreenState extends State<StudentLookupScreen>
           return;
         }
 
-        final currentRollNo = _rollNoController.text.trim();
+        final currentRollNo = _studentData?['roll_no']?.toString().trim() ??
+            _rollNoController.text.trim();
 
         // Refresh only if the currently displayed student
         // is the student whose movement changed.
@@ -159,16 +150,6 @@ class _StudentLookupScreenState extends State<StudentLookupScreen>
 
           await _getStudentData();
 
-          if (!mounted) return;
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '🔄 Student movement updated (${data['action']}).',
-              ),
-              duration: const Duration(seconds: 2),
-            ),
-          );
         }
       } catch (e) {
         print(
@@ -685,6 +666,12 @@ class _StudentLookupScreenState extends State<StudentLookupScreen>
             setState(() {
               _studentData = studentData;
               _accessDenied = false;
+
+              final scannedRollNo = studentData['roll_no']?.toString();
+
+              if (scannedRollNo != null && scannedRollNo.isNotEmpty) {
+                _rollNoController.text = scannedRollNo;
+              }
             });
           },
         ),
@@ -1824,6 +1811,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen>
 
   // UPDATED SECURITY ACTION METHOD WITH OFFLINE SYNC
   Future<void> _performSecurityAction(String action) async {
+    final eventId = const Uuid().v4();
     try {
       final networkService = NetworkService();
       final isOnline = await networkService.isConnected();
@@ -1835,6 +1823,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen>
           action: action,
           role: widget.selectedRole,
           timestamp: DateTime.now(),
+          eventId: eventId,
         );
 
         _showActionResultDialog(true, 'Saved Offline',
@@ -1857,6 +1846,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen>
         body: json.encode({
           'roll_no': _studentData!['roll_no'],
           'action': action,
+          'event_id': eventId,
         }),
       );
 
@@ -1892,6 +1882,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen>
           action: action,
           role: widget.selectedRole,
           timestamp: DateTime.now(),
+          eventId: eventId,
         );
 
         _showActionResultDialog(true, 'Saved Offline',
@@ -1904,6 +1895,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen>
         action: action,
         role: widget.selectedRole,
         timestamp: DateTime.now(),
+        eventId: eventId,
       );
 
       _showActionResultDialog(true, 'Saved Offline',
@@ -2317,7 +2309,7 @@ class _StudentLookupScreenState extends State<StudentLookupScreen>
       icon: Icons.directions_walk,
       iconColor: Colors.orange,
       children: [
-        ...records.reversed
+        ...records
             .take(5)
             .map<Widget>((record) => _buildInOutRecordItem(record))
             .toList(),

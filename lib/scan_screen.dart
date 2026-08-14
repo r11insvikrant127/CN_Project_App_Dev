@@ -7,6 +7,7 @@ import 'local_db_helper.dart';
 import 'network_service.dart';
 import 'student_db_helper.dart';
 import 'sync_service.dart';
+import 'package:uuid/uuid.dart';
 
 const String kBaseUrl = "https://cn-project-app-dev.onrender.com";
 
@@ -32,6 +33,11 @@ class _ScanScreenState extends State<ScanScreen> {
   final StudentDBHelper _studentDB = StudentDBHelper();
   final NetworkService _networkService = NetworkService();
   final SyncService _syncService = SyncService();
+
+  void _safeSetState(VoidCallback fn) {
+    if (!mounted) return;
+    setState(fn);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -126,7 +132,9 @@ class _ScanScreenState extends State<ScanScreen> {
             final List<Barcode> barcodes = capture.barcodes;
             for (final barcode in barcodes) {
               if (barcode.rawValue != null && barcode.rawValue != _lastScanned) {
-                setState(() {
+                if (!mounted) return;
+
+                _safeSetState(() {
                   _lastScanned = barcode.rawValue!;
                   _isScanning = true;
                 });
@@ -274,29 +282,29 @@ class _ScanScreenState extends State<ScanScreen> {
   Future<void> _processScan(String qrData) async {
     try {
       final isOnline = await _networkService.isConnected();
-      
+
       print('🔍 DEBUG: Processing scan for $qrData');
       print('🔍 DEBUG: Online: $isOnline, Scanner hostel: ${widget.hostel}');
-      
-      setState(() {
+
+      if (!mounted) return;
+
+      _safeSetState(() {
         _isScanning = true;
       });
-      
+
       if (isOnline) {
-        // ✅ ONLINE MODE: Fetch directly from server first
         print('🔍 DEBUG: 🌐 ONLINE - fetching complete data from server...');
         await _fetchCompleteDataFromServer(qrData);
       } else {
-        // ✅ OFFLINE MODE: Check local database only
         print('🔍 DEBUG: 📴 OFFLINE - checking local database...');
         await _checkLocalDatabaseOnly(qrData);
       }
-      
     } catch (e) {
       print('🔍 DEBUG: ❌ Unexpected error in processScan: $e');
-      setState(() {
+
+      _safeSetState(() {
         _scannedStudent = {
-          'error': true, 
+          'error': true,
           'error_message': 'Unexpected error: $e',
           'roll_no': qrData
         };
@@ -304,8 +312,10 @@ class _ScanScreenState extends State<ScanScreen> {
         _isScanning = false;
       });
     } finally {
-      Future.delayed(Duration(seconds: 2), () {
-        setState(() {
+      Future.delayed(const Duration(seconds: 2), () {
+        if (!mounted) return;
+
+        _safeSetState(() {
           _lastScanned = '';
         });
       });
@@ -376,7 +386,7 @@ class _ScanScreenState extends State<ScanScreen> {
       print('🔍 DEBUG: ❌ Network error, trying local cache: $e');
       await _tryLocalCacheWithFallback(rollNo, 'Network error: $e');
     } finally {
-      setState(() {
+      _safeSetState(() {
         _isScanning = false;
       });
     }
@@ -412,7 +422,7 @@ class _ScanScreenState extends State<ScanScreen> {
       _handleStudentNotFound(rollNo, 'Student not found in offline database');
     }
     
-    setState(() {
+    _safeSetState(() {
       _isScanning = false;
     });
   }
@@ -448,7 +458,7 @@ class _ScanScreenState extends State<ScanScreen> {
       _handleStudentNotFound(rollNo, 'Student not found. $errorMessage');
     }
     
-    setState(() {
+    _safeSetState(() {
       _isScanning = false;
     });
   }
@@ -508,7 +518,7 @@ class _ScanScreenState extends State<ScanScreen> {
 
   // ✅ NEW: Handle student not found
   void _handleStudentNotFound(String rollNo, String reason) {
-    setState(() {
+    _safeSetState(() {
       _scannedStudent = {
         'not_found': true,
         'roll_no': rollNo,
@@ -530,7 +540,7 @@ class _ScanScreenState extends State<ScanScreen> {
 
   // ✅ NEW: Show scan result (common method) - FOR STUDENT DATA
   void _showStudentScanResult(Map<String, dynamic> studentData) {
-    setState(() {
+    _safeSetState(() {
       _scannedStudent = studentData;
       _showStudentInfo = true;
       _isScanning = false;
@@ -637,7 +647,7 @@ class _ScanScreenState extends State<ScanScreen> {
       } else {
         // Keep existing data but show error
         if (_scannedStudent != null) {
-          setState(() {
+          _safeSetState(() {
             _scannedStudent!['refresh_error'] = true;
             _scannedStudent!['refresh_message'] = 'Failed to refresh: ${response.statusCode}';
           });
@@ -646,7 +656,7 @@ class _ScanScreenState extends State<ScanScreen> {
     } catch (e) {
       print('🔍 DEBUG: ❌ Manual refresh error: $e');
       if (_scannedStudent != null) {
-        setState(() {
+        _safeSetState(() {
           _scannedStudent!['refresh_error'] = true;
           _scannedStudent!['refresh_message'] = 'Refresh failed: $e';
         });
@@ -913,10 +923,12 @@ class _ScanScreenState extends State<ScanScreen> {
               padding: EdgeInsets.symmetric(horizontal: 16),
               child: ElevatedButton.icon(
                 onPressed: () async {
-                  setState(() {
+                  if (!mounted) return;
+
+                  _safeSetState(() {
                     _isScanning = true;
                   });
-                  
+
                   await _fetchStudentFromServer(_scannedStudent!['roll_no']);
                 },
                 icon: Icon(Icons.refresh),
@@ -986,14 +998,14 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 
   void _resetScanAndGoBack() {
-    setState(() {
+    if (!mounted) return;
+
+    _safeSetState(() {
       _showStudentInfo = false;
       _scannedStudent = null;
       _lastScanned = '';
       _isScanning = false;
     });
-
-    cameraController = MobileScannerController();
   }
 
   Widget _buildSimpleVerificationView(bool isDark) {
@@ -1358,6 +1370,7 @@ class _ScanScreenState extends State<ScanScreen> {
 
 
   Future<void> _performSecurityAction(String action) async {
+    final eventId = const Uuid().v4();
     try {
       final isOnline = await _networkService.isConnected();
       final localDB = LocalDBHelper();
@@ -1368,8 +1381,9 @@ class _ScanScreenState extends State<ScanScreen> {
           action: action,
           role: widget.role,
           timestamp: DateTime.now(),
+          eventId: eventId,
         );
-        
+        if (!mounted) return;
         _showSecurityActionResult(  // ✅ FIXED: Changed to _showSecurityActionResult
           true, 
           'Saved Offline', 
@@ -1392,11 +1406,13 @@ class _ScanScreenState extends State<ScanScreen> {
         body: json.encode({
           'roll_no': _scannedStudent!['roll_no'],
           'action': action,
+          'event_id': eventId,
         }),
       );
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
+        if (!mounted) return;
         _showSecurityActionResult(  // ✅ FIXED: Changed to _showSecurityActionResult
           true, 
           'Success', 
@@ -1421,9 +1437,9 @@ class _ScanScreenState extends State<ScanScreen> {
           action: action,
           role: widget.role,
           timestamp: DateTime.now(),
-          syncError: errorMessage,
+          eventId: eventId,
         );
-        
+        if (!mounted) return;
         _showSecurityActionResult(  // ✅ FIXED: Changed to _showSecurityActionResult
           true, 
           'Saved Offline', 
@@ -1437,9 +1453,10 @@ class _ScanScreenState extends State<ScanScreen> {
         action: action,
         role: widget.role,
         timestamp: DateTime.now(),
+        eventId: eventId,
         syncError: e.toString(),
       );
-      
+      if (!mounted) return;
       _showSecurityActionResult(  // ✅ FIXED: Changed to _showSecurityActionResult
         true, 
         'Saved Offline', 

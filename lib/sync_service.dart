@@ -684,6 +684,7 @@ class SyncService {
         body: json.encode({
           'roll_no': scan['roll_no'],
           'action': scan['action'],
+          'event_id': scan['event_id'],
           'offline_sync': true,
           'original_timestamp': timestamp.millisecondsSinceEpoch,
         }),
@@ -742,6 +743,7 @@ class SyncService {
         },
         body: json.encode({
           'roll_no': visit['roll_no'],
+          'event_id': visit['event_id'],
           'offline_sync': true,
           'original_timestamp': timestamp.millisecondsSinceEpoch,
         }),
@@ -853,6 +855,7 @@ class SyncService {
         return {
           'roll_no': scan['roll_no'],
           'action': scan['action'],
+          'event_id': scan['event_id'],
           'original_timestamp': timestamp.millisecondsSinceEpoch,
         };
       }).toList();

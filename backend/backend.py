@@ -278,6 +278,10 @@ def initialize_database():
         db.students.create_index([('roll_no', 1)], unique=True)
         db.devices.create_index([('device_id', 1)], unique=True)
         db.security_logs.create_index([('timestamp', -1)])
+        db.movement_records.create_index(
+            [('event_id', 1)],
+            unique=True
+        )
         # Indexes for proactive allowed-time monitoring
         db.active_checkouts.create_index(
             [('roll_no', 1)],

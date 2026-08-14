@@ -39,6 +39,7 @@ dependencies:
   firebase_core: ^4.13.0
   firebase_messaging: ^16.5.0
   socket_io_client: ^3.1.2
+  uuid: ^4.6.0
 
 dev_dependencies:
   flutter_test:

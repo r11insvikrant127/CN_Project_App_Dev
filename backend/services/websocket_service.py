@@ -7,63 +7,88 @@ socketio = SocketIO(
     async_mode="threading"
 )
 
+VALID_HOSTELS = {'A', 'B', 'C', 'D'}
+ADMIN_ROOM = 'admin_all'
+
 
 @socketio.on('join_hostel')
 def handle_join_hostel(data):
     """
-    Join the Socket.IO room corresponding to the
-    authenticated supervisor's hostel.
+    Authenticate the Socket.IO connection using the JWT.
+
+    Supervisor:
+        super_a -> hostel_A
+        super_b -> hostel_B
+        super_c -> hostel_C
+        super_d -> hostel_D
+
+    Admin:
+        admin -> admin_all
 
     The hostel supplied by the client is NOT trusted.
-    The server derives the hostel from the authenticated
-    supervisor identity.
+    The server derives the authorized room from the JWT role.
     """
 
     try:
-        # Verify JWT from the Socket.IO handshake headers.
         verify_jwt_in_request()
 
         identity_string = get_jwt_identity()
 
         if not identity_string or ':' not in identity_string:
-            print("❌ WebSocket join rejected: invalid JWT identity")
+            print(
+                "❌ WebSocket join rejected: invalid JWT identity"
+            )
             return
 
         device_id, user_role = identity_string.split(':', 1)
+
+        user_role = user_role.strip().lower()
 
         print(
             f"🔐 WebSocket join request | "
             f"Role={user_role} | Device={device_id}"
         )
 
-        # Only supervisors are allowed to receive hostel violation alerts.
+        # =========================================================
+        # ADMIN
+        # =========================================================
+        if user_role == 'admin':
+            join_room(ADMIN_ROOM)
+
+            print(
+                f"🔌 WEBSOCKET ADMIN ROOM JOINED | "
+                f"Role=admin | "
+                f"Device={device_id} | "
+                f"Room={ADMIN_ROOM}"
+            )
+
+            return
+
+        # =========================================================
+        # SUPERVISORS
+        # =========================================================
         if not user_role.startswith('super_'):
             print(
                 f"🚫 WebSocket join rejected | "
-                f"Role={user_role} is not a supervisor"
+                f"Role={user_role} is not authorized"
             )
             return
-
-        # Expected roles:
-        # super_a
-        # super_b
-        # super_c
-        # super_d
 
         role_parts = user_role.split('_')
 
         if len(role_parts) != 2:
             print(
-                f"❌ WebSocket join rejected: invalid supervisor role "
-                f"{user_role}"
+                f"❌ WebSocket join rejected: "
+                f"invalid supervisor role {user_role}"
             )
             return
 
         hostel = role_parts[1].strip().upper()
 
-        if hostel not in {'A', 'B', 'C', 'D'}:
+        if hostel not in VALID_HOSTELS:
             print(
-                f"❌ WebSocket join rejected: invalid hostel {hostel}"
+                f"❌ WebSocket join rejected: "
+                f"invalid hostel {hostel}"
             )
             return
 
@@ -72,10 +97,11 @@ def handle_join_hostel(data):
         join_room(room)
 
         print(
-            f"🔌 WEBSOCKET ROOM JOINED | "
+            f"🔌 WEBSOCKET SUPERVISOR ROOM JOINED | "
             f"Role={user_role} | "
             f"Hostel={hostel} | "
-            f"Room={room}"
+            f"Room={room} | "
+            f"Device={device_id}"
         )
 
     except Exception as e:
@@ -87,65 +113,93 @@ def handle_join_hostel(data):
 
 def emit_violation_alert(alert_data):
     """
-    Send a violation alert only to supervisors
-    belonging to the student's hostel.
+    Send violation WebSocket event to:
+
+    1. The supervisor room belonging to the student's hostel.
+    2. The admin_all room.
+
+    FCM is handled separately and is NOT affected here.
     """
+
     try:
         hostel = str(
             alert_data.get('hostel', '')
         ).strip().upper()
 
-        if not hostel:
+        if hostel not in VALID_HOSTELS:
             print(
-                "❌ WebSocket alert not sent: "
-                "student hostel missing"
+                "❌ WebSocket violation alert not sent: "
+                f"invalid/missing hostel={hostel}"
             )
             return
 
-        room = f"hostel_{hostel}"
+        supervisor_room = f"hostel_{hostel}"
 
+        # Supervisor of that hostel
         socketio.emit(
             'allowed_time_violation',
             alert_data,
-            room=room
+            room=supervisor_room
+        )
+
+        # Admin
+        socketio.emit(
+            'allowed_time_violation',
+            alert_data,
+            room=ADMIN_ROOM
         )
 
         print(
             f"🔌 WEBSOCKET VIOLATION ALERT EMITTED | "
             f"Roll={alert_data.get('roll_no')} | "
             f"Hostel={hostel} | "
-            f"Room={room}"
+            f"SupervisorRoom={supervisor_room} | "
+            f"AdminRoom={ADMIN_ROOM}"
         )
 
     except Exception as e:
         print(
-            f"❌ WebSocket alert emission failed: "
+            f"❌ WebSocket violation alert emission failed: "
             f"{type(e).__name__}: {e}"
         )
 
+
 def emit_movement_update(movement_data):
     """
-    Send a student movement update only to supervisors
-    belonging to the student's hostel.
+    Send student movement update to:
+
+    1. Supervisor assigned to the student's hostel.
+    2. Admin.
+
+    Supervisors never receive another hostel's update.
     """
+
     try:
         hostel = str(
             movement_data.get('hostel', '')
         ).strip().upper()
 
-        if not hostel:
+        if hostel not in VALID_HOSTELS:
             print(
                 "❌ WebSocket movement update not sent: "
-                "student hostel missing"
+                f"invalid/missing hostel={hostel}"
             )
             return
 
-        room = f"hostel_{hostel}"
+        supervisor_room = f"hostel_{hostel}"
 
+        # Supervisor of student's hostel
         socketio.emit(
             'student_movement_updated',
             movement_data,
-            room=room
+            room=supervisor_room
+        )
+
+        # Admin receives all hostel updates
+        socketio.emit(
+            'student_movement_updated',
+            movement_data,
+            room=ADMIN_ROOM
         )
 
         print(
@@ -153,7 +207,8 @@ def emit_movement_update(movement_data):
             f"Roll={movement_data.get('roll_no')} | "
             f"Action={movement_data.get('action')} | "
             f"Hostel={hostel} | "
-            f"Room={room}"
+            f"SupervisorRoom={supervisor_room} | "
+            f"AdminRoom={ADMIN_ROOM}"
         )
 
     except Exception as e:

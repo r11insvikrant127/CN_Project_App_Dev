@@ -80,8 +80,7 @@ class SocketService {
   static void joinHostel(String hostel) {
     if (_socket == null || !_socket!.connected) {
       print(
-        '⚠️ Cannot join hostel room: '
-        'WebSocket is not connected',
+        '⚠️ Cannot join WebSocket room: socket is not connected',
       );
       return;
     }
@@ -93,7 +92,7 @@ class SocketService {
     });
 
     print(
-      '🔌 Requested WebSocket hostel room: '
+      '🔌 Requested WebSocket authorization for: '
       'hostel_$normalizedHostel',
     );
   }

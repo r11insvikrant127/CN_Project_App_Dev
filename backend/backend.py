@@ -561,25 +561,45 @@ def check_session_timeout():
             if identity and ':' in identity:
                 device_id, role = identity.split(':', 1)
 
-                # Check for session timeout (only for admin for now)
+                # Check for session timeout for admin
                 if role == 'admin':
                     session_found = False
+
                     for session_id, session_data in list(active_sessions.items()):
                         if session_data['device_id'] == device_id:
-                            time_since_activity = datetime.now(INDIA_TZ) - session_data['last_activity']
-                            if time_since_activity.total_seconds() > SESSION_TIMEOUT:
-                                # Session expired
-                                del active_sessions[session_id]
-                                log_security_event('session_expired', role, device_id, get_remote_address())
-                                return jsonify({'message': 'Session expired. Please login again.'}), 401
-                            else:
-                                # Update last activity
-                                active_sessions[session_id]['last_activity'] = datetime.now(INDIA_TZ)
-                                session_found = True
-                                break
 
-                    if not session_found and role == 'admin':
-                        return jsonify({'message': 'Invalid session. Please login again.'}), 401
+                            time_since_activity = (
+                                datetime.now(INDIA_TZ) -
+                                session_data['last_activity']
+                            )
+
+                            if time_since_activity.total_seconds() > SESSION_TIMEOUT:
+                                del active_sessions[session_id]
+
+                                log_security_event(
+                                    'session_expired',
+                                    role,
+                                    device_id,
+                                    get_remote_address()
+                                )
+
+                                return jsonify({
+                                    'message': 'Session expired. Please login again.'
+                                }), 401
+
+                            # Session is valid
+                            session_data['last_activity'] = datetime.now(INDIA_TZ)
+                            session_found = True
+                            break
+
+                    # IMPORTANT:
+                    # Do NOT reject the request merely because the in-memory
+                    # session is missing. JWT authentication has already succeeded.
+                    if not session_found:
+                        print(
+                            f"⚠️ Admin JWT valid but in-memory session not found "
+                            f"for device {device_id}. Continuing with JWT authentication."
+                        )
 
         except Exception as e:
             print(f"Session check error: {e}")

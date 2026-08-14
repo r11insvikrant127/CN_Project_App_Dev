@@ -18,6 +18,7 @@ import uuid
 # NEW IMPORTS (required for Atlas + Render)
 from pymongo import MongoClient
 import certifi
+from flask_jwt_extended import verify_jwt_in_request
 
 # ============================================================
 # NEW IMPORTS FOR MODULARITY - ADD THESE
@@ -525,7 +526,10 @@ def check_session_timeout():
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
         try:
-            # Extract session info from token
+            # Verify the JWT before accessing its identity.
+            verify_jwt_in_request()
+
+            # Extract session info from the verified token.
             identity = get_jwt_identity()
 
             if identity and ':' in identity:

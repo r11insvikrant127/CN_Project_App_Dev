@@ -4,7 +4,6 @@ Monitoring Service - Proactive monitoring of student checkouts
 """
 
 from datetime import datetime, timedelta, timezone
-from bson import ObjectId
 from services.notification_service import send_hostel_alert
 from services.websocket_service import emit_violation_alert
 
@@ -184,13 +183,7 @@ def _check_single_checkout(checkout, now_utc, db):
     
     print(f"⏰ TIME VIOLATION | Roll={roll_no} | Exceeded={exceeded_minutes} min")
     
-    # ============================================================
-    # CREATE DISCIPLINARY RECORD WITH ID
-    # ============================================================
-    disciplinary_record_id = _create_disciplinary_record(
-        roll_no, out_time_utc, allowed_minutes, 
-        exceeded_minutes, checkout, now_utc, db
-    )
+
     
     # ============================================================
     # CREATE REALTIME ALERT WITH ID
@@ -249,83 +242,34 @@ def _check_single_checkout(checkout, now_utc, db):
 
 
     # ============================================================
-    # STORE IDs IN ACTIVE CHECKOUT FOR FINALIZATION
+    # STORE ALERT ID + PROACTIVE EXCEEDED TIME
+    # IMPORTANT:
+    # Do NOT create/store a disciplinary record here.
+    # The disciplinary record is created/finalized on CHECK-IN,
+    # using the complete OUT -> IN duration.
     # ============================================================
-    if disciplinary_record_id or alert_id:
-        update_data = {'updated_at': now_utc}
-        if disciplinary_record_id:
-            update_data['disciplinary_record_id'] = disciplinary_record_id
-        if alert_id:
-            update_data['alert_id'] = alert_id
-        if exceeded_minutes>0:
-            update_data['proactive_exceeded_minutes'] = exceeded_minutes
-        
+    if alert_id:
+        update_data = {
+            'updated_at': now_utc,
+            'alert_id': alert_id,
+            'proactive_exceeded_minutes': exceeded_minutes
+        }
+
         db.active_checkouts.update_one(
             {'_id': checkout['_id']},
             {'$set': update_data}
         )
-        
+
         print(
-            f"💾 STORED IDs IN ACTIVE CHECKOUT | "
+            f"💾 STORED ALERT IN ACTIVE CHECKOUT | "
             f"Roll={roll_no} | "
-            f"DisciplinaryID={disciplinary_record_id} | "
             f"AlertID={alert_id} | "
-            f"Exceeded={exceeded_minutes:.2f}"
+            f"ProactiveExceeded={exceeded_minutes:.2f}"
         )
     
     print(f"🚨 PROACTIVE VIOLATION COMPLETE | Student={roll_no} | Exceeded={exceeded_minutes} min")
 
 
-def _create_disciplinary_record(roll_no, out_time_utc, allowed_minutes, 
-                                exceeded_minutes, checkout, now_utc, db):
-    """
-    Create a disciplinary record for time violation.
-    Returns the ObjectId of the created record.
-    """
-    # ============================================================
-    # FIX: Create ID explicitly before inserting
-    # ============================================================
-    disciplinary_record_id = ObjectId()
-    
-    disciplinary_record = {
-        '_id': disciplinary_record_id,  # Explicit ID
-        'date': now_utc,
-        'time': get_ist_now().strftime('%H:%M'),
-        'description': (
-            f'Exceeded allowed time outside by {exceeded_minutes} minutes. '
-            f'Out at: {out_time_utc.strftime("%Y-%m-%d %H:%M")}, '
-            f'Allowed: {allowed_minutes} minutes'
-        ),
-        'action_taken': f'Warning issued for exceeding {allowed_minutes}-minute limit',
-        'recorded_by': 'system_monitor',
-        'recorded_at': now_utc,
-        'time_exceeded_minutes': exceeded_minutes,
-        'proactive_exceeded_minutes': exceeded_minutes,  # Store initial value
-        'final_exceeded_minutes': exceeded_minutes,  # Will be updated on check-in
-        'actual_duration_minutes': None,  # Will be updated on check-in
-        'auto_generated': True,
-        'proactive_monitoring': True,
-        'allowed_time_limit': allowed_minutes,
-        'violation_status': 'pending_confirmation',  # Critical for tracking
-        'detection_method': 'proactive_monitoring',
-        'out_time': out_time_utc,
-        'in_time': None,  # Will be set on check-in
-        'finalized_at': None  # Will be set on check-in
-    }
-    
-    db.students.update_one(
-        {'roll_no': roll_no},
-        {'$push': {'disciplinary_records': disciplinary_record}}
-    )
-    
-    print(
-        f"📝 DISCIPLINARY RECORD CREATED | "
-        f"Roll={roll_no} | "
-        f"ID={disciplinary_record_id} | "
-        f"Exceeded={exceeded_minutes:.2f} min"
-    )
-    
-    return disciplinary_record_id
 
 
 def _create_violation_alert(roll_no, checkout, out_time_utc, allowed_minutes, 

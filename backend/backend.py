@@ -5,7 +5,6 @@ from bson import ObjectId
 from functools import wraps
 import os
 import hashlib
-import numpy as np
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
 from collections import defaultdict, Counter
@@ -50,8 +49,11 @@ from services.analytics_service import (
     get_late_arrivals_analytics,
     calculate_weekly_late_arrivals,
     get_visit_trends,
-    get_predictive_insights,
+    _generate_predictive_insights as generate_predictive_insights,
+    _predict_next_week_visits as predict_next_week_visits,
+    predict_unauthorized_visits,
     submit_weekly_canteen_report,
+    _generate_ai_alerts as generate_ai_alerts,
     get_late_arrivals_reports
 )
 
@@ -1701,7 +1703,7 @@ def get_unauthorized_visits_analytics():
             daily_analysis[day] += result['visit_count']
 
         # Predictive analytics
-        predictions = _predict_unauthorized_visits(daily_analysis)
+        predictions = predict_unauthorized_visits(daily_analysis)
 
         return jsonify({
             'summary': {
@@ -1720,48 +1722,6 @@ def get_unauthorized_visits_analytics():
     except Exception as e:
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
-
-def _predict_unauthorized_visits(daily_analysis):
-    """Predict next week's unauthorized visits using manual linear regression"""
-    if len(daily_analysis) < 7:
-        return {'accuracy': 'Insufficient data', 'predictions': []}
-
-    # Prepare data
-    dates = sorted([datetime.strptime(day, '%Y-%m-%d') for day in daily_analysis.keys()])
-    visits = [daily_analysis[date.strftime('%Y-%m-%d')] for date in dates]
-
-    # Convert dates to numerical values
-    X = np.array([i for i in range(len(dates))])
-    y = np.array(visits)
-
-    # Manual linear regression (y = mx + b)
-    n = len(X)
-    sum_x = np.sum(X)
-    sum_y = np.sum(y)
-    sum_xy = np.sum(X * y)
-    sum_xx = np.sum(X * X)
-
-    # Calculate slope (m) and intercept (b)
-    m = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x)
-    b = (sum_y - m * sum_x) / n
-
-    # Predict next 7 days
-    future_days = np.array([i for i in range(len(dates), len(dates) + 7)])
-    predictions = m * future_days + b
-
-    # Calculate accuracy (similar to your previous logic)
-    accuracy = max(0.85, min(0.95, 1 - (np.std(y) / np.mean(y)) if np.mean(y) > 0 else 0.85))
-
-    return {
-        'accuracy': round(accuracy * 100, 1),
-        'predictions': [
-            {
-                'date': (datetime.now(INDIA_TZ) + timedelta(days=i+1)).strftime('%Y-%m-%d'),
-                'predicted_visits': max(0, round(pred))
-            }
-            for i, pred in enumerate(predictions)
-        ]
-    }
 
 def _generate_analytics_alerts(hostel_analysis, daily_analysis):
     """Generate intelligent alerts based on patterns"""
@@ -1989,12 +1949,16 @@ def get_predictive_insights():
                 'alerts': []
             }), 200
 
-        insights = _generate_predictive_insights(visits)
+        insights = generate_predictive_insights(visits)
 
         # ✅ FIXED: Pass user_role and requested_hostel to predictions
-        predictions = _predict_next_week_visits(visits, user_role, requested_hostel)
+        predictions = predict_next_week_visits(
+            visits,
+            user_role,
+            requested_hostel
+        )
 
-        alerts = _generate_ai_alerts(visits)
+        alerts = generate_ai_alerts(visits, db)
 
         return jsonify({
             'insights': insights,
@@ -2011,281 +1975,6 @@ def get_predictive_insights():
         print(f"❌ Error in predictive insights: {e}")
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
-def _generate_predictive_insights(visits):
-    """Generate AI-powered insights from visit data"""
-    insights = []
-
-    if not visits:
-        print("📭 No visits data for insights generation")
-        return insights
-
-    print(f"🔍 Generating insights from {len(visits)} visits")
-
-    # 1. Hostel Movement Patterns
-    hostel_patterns = defaultdict(lambda: defaultdict(int))
-    day_patterns = defaultdict(lambda: defaultdict(int))
-    hour_patterns = defaultdict(int)
-
-    for visit in visits:
-        student_hostel = visit.get('student_hostel', 'Unknown')
-        canteen_hostel = visit.get('canteen_hostel', 'Unknown')
-        day_of_week = visit['timestamp'].strftime('%A')
-        hour = visit['timestamp'].hour
-
-        hostel_patterns[student_hostel][canteen_hostel] += 1
-        day_patterns[student_hostel][day_of_week] += 1
-        hour_patterns[hour] += 1
-
-    print(f"🏠 Hostel patterns: {dict(hostel_patterns)}")
-    print(f"📅 Day patterns: {dict(day_patterns)}")
-    print(f"⏰ Hour patterns: {dict(hour_patterns)}")
-
-    # Insight 1: Which hostel goes where (only if multiple canteens visited)
-    for student_hostel, canteens in hostel_patterns.items():
-        if len(canteens) > 1:  # Only show if visiting multiple canteens
-            top_canteen = max(canteens.items(), key=lambda x: x[1])
-            insights.append({
-                'type': 'hostel_movement',
-                'title': f'🏠 {student_hostel} Movement Pattern',
-                'description': f'Students from {student_hostel} most frequently visit {top_canteen[0]} canteen ({top_canteen[1]} visits)',
-                'priority': 'medium',
-                'data': dict(canteens)
-            })
-        elif canteens:  # Even if only one canteen, still show the pattern
-            canteen_name, count = list(canteens.items())[0]
-            insights.append({
-                'type': 'hostel_movement',
-                'title': f'🏠 {student_hostel} Primary Canteen',
-                'description': f'Students from {student_hostel} exclusively visit {canteen_name} canteen ({count} visits)',
-                'priority': 'low',
-                'data': dict(canteens)
-            })
-
-    # Insight 2: Peak days for each hostel (only if significant variation)
-    for student_hostel, days_data in day_patterns.items():
-        if len(days_data) > 1 and max(days_data.values()) >= 3:  # At least 3 visits on peak day
-            peak_day = max(days_data.items(), key=lambda x: x[1])
-            insights.append({
-                'type': 'peak_day',
-                'title': f'📅 {student_hostel} Peak Day',
-                'description': f'{student_hostel} students show highest activity on {peak_day[0]}s ({peak_day[1]} visits)',
-                'priority': 'low',
-                'data': dict(days_data)
-            })
-
-    # Insight 3: Overall peak hours (only if significant data)
-    if hour_patterns and max(hour_patterns.values()) >= 3:
-        peak_hour = max(hour_patterns.items(), key=lambda x: x[1])
-        insights.append({
-            'type': 'peak_hours',
-            'title': '⏰ System-wide Peak Hours',
-            'description': f'Peak unauthorized activity occurs at {peak_hour[0]}:00 ({peak_hour[1]} visits)',
-            'priority': 'high',
-            'data': dict(hour_patterns)
-        })
-
-    # Insight 4: Add a general insight if no specific patterns found
-    if not insights and visits:
-        total_visits = len(visits)
-        insights.append({
-            'type': 'general_activity',
-            'title': '📊 Activity Summary',
-            'description': f'Total of {total_visits} unauthorized visits analyzed',
-            'priority': 'info',
-            'data': {'total_visits': total_visits}
-        })
-
-    print(f"🎯 Generated {len(insights)} insights")
-    return insights
-
-def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
-    """Predict next week's unauthorized visits with manual linear regression - NOW ROLE-BASED"""
-
-    # ✅ FIXED: Filter visits for super users BEFORE prediction
-    if user_role and user_role.startswith('super_') and requested_hostel:
-        filtered_visits = []
-        for visit in visits:
-            # Super sees: their students going elsewhere + others coming to their canteen
-            if (visit.get('student_hostel') == requested_hostel or
-                visit.get('canteen_hostel') == requested_hostel):
-                filtered_visits.append(visit)
-        visits = filtered_visits
-        print(f"🔍 Super prediction: Filtered to {len(visits)} visits for hostel {requested_hostel}")
-
-    if len(visits) < 7:
-        return {
-            'accuracy': 'Insufficient data (need at least 7 days)',
-            'predictions': [],
-            'confidence': 0,
-            'scope': 'hostel' if user_role and user_role.startswith('super_') else 'system'
-        }
-
-    # Group visits by date
-    daily_visits = defaultdict(int)
-    for visit in visits:
-        date_str = visit['timestamp'].strftime('%Y-%m-%d')
-        daily_visits[date_str] += 1
-
-    print(f"🔍 PREDICTION - Historical data analysis:")
-    print(f"📊 Total visits analyzed: {len(visits)}")
-    print(f"📅 Unique days with data: {len(daily_visits)}")
-    print(f"📈 Daily visit counts:")
-    for date_str, count in sorted(daily_visits.items()):
-        print(f"   {date_str}: {count} visits")
-
-    if daily_visits:
-        visit_counts = list(daily_visits.values())
-        print(f"📊 Data stats - Min: {min(visit_counts)}, Max: {max(visit_counts)}, Avg: {sum(visit_counts)/len(visit_counts):.1f}")
-
-    # Prepare data for prediction
-    dates = sorted([datetime.strptime(day, '%Y-%m-%d') for day in daily_visits.keys()])
-    visit_counts = [daily_visits[date.strftime('%Y-%m-%d')] for date in dates]
-
-    # Convert dates to numerical values (days since first date)
-    first_date = dates[0]
-    X = np.array([(date - first_date).days for date in dates])
-    y = np.array(visit_counts)
-
-    print(f"🔍 ML Input - X: {X}, y: {y}")
-
-    # MANUAL LINEAR REGRESSION (replaces sklearn)
-    n = len(X)
-    if n == 0:
-        return {
-            'accuracy': 'Insufficient data',
-            'predictions': [],
-            'confidence': 0,
-            'scope': 'hostel' if user_role and user_role.startswith('super_') else 'system'
-        }
-
-    # Calculate slope (m) and intercept (b) manually: y = mx + b
-    sum_x = np.sum(X)
-    sum_y = np.sum(y)
-    sum_xy = np.sum(X * y)
-    sum_xx = np.sum(X * X)
-
-    # Avoid division by zero
-    denominator = n * sum_xx - sum_x * sum_x
-    if denominator == 0:
-        # If all X values are same, use average
-        m = 0
-        b = sum_y / n
-    else:
-        m = (n * sum_xy - sum_x * sum_y) / denominator
-        b = (sum_y - m * sum_x) / n
-
-    print(f"🔍 Manual Regression - Intercept: {b:.2f}, Slope: {m:.2f}")
-
-    # Calculate accuracy metrics
-    predictions = m * X + b
-    mse = np.mean((y - predictions) ** 2)
-    accuracy = max(0.75, min(0.95, 1 - (mse / np.mean(y)) if np.mean(y) > 0 else 0.85))
-
-    print(f"🔍 Manual Results - MSE: {mse:.2f}, Accuracy: {accuracy:.2f}")
-
-    # Predict next 7 days
-    last_date = dates[-1]
-    future_dates = [last_date + timedelta(days=i+1) for i in range(7)]
-    future_X = np.array([(date - first_date).days for date in future_dates])
-    future_predictions = m * future_X + b
-
-    print(f"🔍 Future predictions raw: {future_predictions}")
-
-    # Generate prediction dates
-    prediction_dates = []
-    for i in range(7):
-        pred_date = last_date + timedelta(days=i+1)
-        prediction_dates.append(pred_date)
-
-    scope = 'hostel' if user_role and user_role.startswith('super_') else 'system'
-
-    # Create final predictions with rounding and bounds
-    final_predictions = []
-    for pred_date, pred in zip(prediction_dates, future_predictions):
-        # Ensure predictions are reasonable (not negative, not too high)
-        bounded_pred = max(0, min(10, int(round(pred))))  # Cap at 10 visits max
-        confidence_band = max(1, int(round(pred * 0.2)))  # 20% confidence band
-
-        final_predictions.append({
-            'date': pred_date.strftime('%Y-%m-%d'),
-            'day': pred_date.strftime('%A'),
-            'predicted_visits': bounded_pred,
-            'confidence_band': f'±{confidence_band}',
-            'raw_prediction': round(pred, 2)  # For debugging
-        })
-
-    print(f"🔍 Final predictions: {[p['predicted_visits'] for p in final_predictions]}")
-
-    return {
-        'accuracy': f'{accuracy * 100:.1f}%',
-        'confidence': round(accuracy * 100, 1),
-        'scope': scope,
-        'predictions': final_predictions
-    }
-
-def _generate_ai_alerts(visits):
-    """Generate AI-powered alerts for suspicious patterns"""
-    alerts = []
-
-    if not visits:
-        return alerts
-
-    # Group visits by hour and hostel
-    hourly_activity = defaultdict(lambda: defaultdict(int))
-    hostel_activity = defaultdict(int)
-    recent_activity = defaultdict(int)
-
-    cutoff_24h = datetime.now(INDIA_TZ) - timedelta(hours=24)
-    cutoff_2h = datetime.now(INDIA_TZ) - timedelta(hours=2)
-
-    for visit in visits:
-        student_hostel = visit.get('student_hostel', 'Unknown')
-        hour = visit['timestamp'].hour
-
-        hourly_activity[student_hostel][hour] += 1
-        hostel_activity[student_hostel] += 1
-
-        # Check recent activity (last 24 hours)
-        if visit['timestamp'] >= cutoff_24h:
-            recent_activity[student_hostel] += 1
-
-        # Check very recent activity (last 2 hours)
-        if visit['timestamp'] >= cutoff_2h:
-            # Alert for high activity in short timeframe
-            if recent_activity[student_hostel] >= 5:  # 5+ visits in 2 hours
-                alerts.append({
-                    'type': 'high_activity_short_term',
-                    'title': '🚨 High Activity Alert',
-                    'message': f'{student_hostel} students showing unusual activity: {recent_activity[student_hostel]} visits in 2 hours',
-                    'priority': 'high',
-                    'hostel': student_hostel,
-                    'count': recent_activity[student_hostel],
-                    'timeframe': '2 hours'
-                })
-
-    # Alert for overall high activity hostels
-    avg_activity = np.mean(list(hostel_activity.values())) if hostel_activity else 0
-    for hostel, count in hostel_activity.items():
-        if count > avg_activity * 2 and count >= 5:  # 2x average and at least 5 visits
-            alerts.append({
-                'type': 'high_activity_hostel',
-                'title': '👥 Suspicious Pattern Detected',
-                'message': f'{hostel} students showing increased activity: {count} visits vs average {avg_activity:.1f}',
-                'priority': 'medium',
-                'hostel': hostel,
-                'count': count,
-                'average': round(avg_activity, 1)
-            })
-
-    # Remove duplicates
-    unique_alerts = []
-    seen_messages = set()
-    for alert in alerts:
-        if alert['message'] not in seen_messages:
-            unique_alerts.append(alert)
-            seen_messages.add(alert['message'])
-
-    return unique_alerts
 
 def _generate_real_time_alerts(visits, timeframe_hours):
     """Generate real-time alerts for supervisors"""
@@ -2548,39 +2237,6 @@ def get_weekly_summary():
         print(f"❌ Error in weekly summary: {e}")
         return jsonify({'weekly_summary': {}}), 200
 
-
-# Session timeout middleware
-@app.before_request
-def check_session_timeout():
-    if request.endpoint in ['admin_biometric_auth', 'verify_device']:
-        return
-
-    auth_header = request.headers.get('Authorization')
-    if auth_header and auth_header.startswith('Bearer '):
-        try:
-            # Extract session info from token
-            token = auth_header.split(' ')[1]
-            identity = get_jwt_identity()
-
-            if identity and ':' in identity:
-                device_id, role = identity.split(':', 1)
-                if role == 'admin':
-                    # Check for session timeout (8 hours)
-                    for session_id, session_data in active_sessions.items():
-                        if session_data['device_id'] == device_id:
-                            time_since_activity = datetime.now(INDIA_TZ) - session_data['last_activity']
-                            if time_since_activity.total_seconds() > 28800:  # 8 hours
-                                del active_sessions[session_id]
-                                return jsonify({'message': 'Session expired'}), 401
-                            else:
-                                # Update last activity
-                                active_sessions[session_id]['last_activity'] = datetime.now(INDIA_TZ)
-                                break
-        except Exception:
-            pass
-
-# Login attempt tracking
-login_attempts = {}
 
 @app.route('/api/secure-login', methods=['POST'])
 @limiter.limit("10 per minute")

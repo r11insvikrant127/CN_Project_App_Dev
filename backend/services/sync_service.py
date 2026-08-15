@@ -183,38 +183,3 @@ def get_students_for_sync(hostel=None, limit=10000, db=None):
         })
     
     return compressed_students
-
-
-def validate_student_offline(roll_no, db=None):
-    """
-    Validate a student for offline scanning
-    
-    Args:
-        roll_no: Student roll number
-        db: Database connection (optional)
-    
-    Returns:
-        dict: Student info or None
-    """
-    if db is None:
-        db = get_db()
-    
-    if db is None:
-        return None
-    
-    student = db.students.find_one(
-        {'roll_no': roll_no},
-        {'roll_no': 1, 'name': 1, 'hostel': 1, '_id': 0}
-    )
-    
-    if student:
-        return {
-            'valid': True,
-            'student': {
-                'roll_no': student.get('roll_no'),
-                'name': student.get('name'),
-                'hostel': student.get('hostel')
-            }
-        }
-    
-    return {'valid': False, 'message': 'Student not found'}

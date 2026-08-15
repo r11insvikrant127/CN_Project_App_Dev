@@ -13,3 +13,4 @@ python-dotenv
 firebase-admin
 Flask-SocketIO==5.3.6
 simple-websocket
+scikit-learn

@@ -7,6 +7,9 @@ Extracted from backend.py for better maintainability
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
 from utils.time_utils import INDIA_TZ, get_ist_now, normalize_datetime_to_ist
 from utils.db_utils import get_db
 
@@ -201,54 +204,233 @@ def get_monthly_unauthorized_visits(year=None, month=None, hostel=None, user_rol
 
 def predict_unauthorized_visits(daily_analysis):
     """
-    Predict next week's unauthorized visits using manual linear regression
-    
-    Args:
-        daily_analysis: Dict of daily visit counts
-    
-    Returns:
-        dict: Predictions with accuracy
-    """
-    if len(daily_analysis) < 7:
-        return {'accuracy': 'Insufficient data', 'predictions': []}
-    
-    # Prepare data
-    dates = sorted([datetime.strptime(day, '%Y-%m-%d') for day in daily_analysis.keys()])
-    visits = [daily_analysis[date.strftime('%Y-%m-%d')] for date in dates]
-    
-    # Convert dates to numerical values
-    X = np.array([i for i in range(len(dates))])
-    y = np.array(visits)
-    
-    # Manual linear regression (y = mx + b)
-    n = len(X)
-    sum_x = np.sum(X)
-    sum_y = np.sum(y)
-    sum_xy = np.sum(X * y)
-    sum_xx = np.sum(X * X)
-    
-    # Calculate slope (m) and intercept (b)
-    m = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x)
-    b = (sum_y - m * sum_x) / n
-    
-    # Predict next 7 days
-    future_days = np.array([i for i in range(len(dates), len(dates) + 7)])
-    predictions = m * future_days + b
-    
-    # Calculate accuracy
-    accuracy = max(0.85, min(0.95, 1 - (np.std(y) / np.mean(y)) if np.mean(y) > 0 else 0.85))
-    
-    return {
-        'accuracy': round(accuracy * 100, 1),
-        'predictions': [
-            {
-                'date': (get_ist_now() + timedelta(days=i+1)).strftime('%Y-%m-%d'),
-                'predicted_visits': max(0, round(pred))
-            }
-            for i, pred in enumerate(predictions)
-        ]
-    }
+    Predict next week's unauthorized visits using
+    scikit-learn LinearRegression.
 
+    Evaluation:
+    - Chronological 80% training / 20% testing split.
+    - No random shuffle because this is time-series data.
+
+    Final model:
+    - Retrained on all available historical data.
+    - Used to predict the next 7 days.
+    """
+
+    if not daily_analysis:
+        return {
+            'accuracy': 'Insufficient data',
+            'predictions': [],
+            'metrics': {}
+        }
+
+    # ---------------------------------------------------------
+    # Sort dates chronologically
+    # ---------------------------------------------------------
+    dates = sorted(
+        datetime.strptime(day, '%Y-%m-%d')
+        for day in daily_analysis.keys()
+    )
+
+    # ---------------------------------------------------------
+    # Create contiguous daily data.
+    # Missing days are represented as 0 visits.
+    # ---------------------------------------------------------
+    start_date = dates[0]
+    end_date = dates[-1]
+
+    all_dates = []
+    current_date = start_date
+
+    while current_date <= end_date:
+        all_dates.append(current_date)
+        current_date += timedelta(days=1)
+
+    visits = np.array([
+        daily_analysis.get(
+            date.strftime('%Y-%m-%d'),
+            0
+        )
+        for date in all_dates
+    ], dtype=float)
+
+    # Need enough data for train/test evaluation.
+    if len(all_dates) < 10:
+        return {
+            'accuracy': 'Insufficient data',
+            'predictions': [],
+            'metrics': {
+                'message': 'At least 10 daily observations are required',
+                'historical_days': len(all_dates)
+            }
+        }
+
+    # ---------------------------------------------------------
+    # Prepare ML data
+    # X = day index
+    # y = unauthorized visit count
+    # ---------------------------------------------------------
+    X = np.arange(
+        len(visits),
+        dtype=float
+    ).reshape(-1, 1)
+
+    y = visits
+
+    # ---------------------------------------------------------
+    # Chronological 80/20 train-test split
+    # ---------------------------------------------------------
+    split_index = max(
+        1,
+        int(len(X) * 0.8)
+    )
+
+    if split_index >= len(X):
+        split_index = len(X) - 1
+
+    X_train = X[:split_index]
+    y_train = y[:split_index]
+
+    X_test = X[split_index:]
+    y_test = y[split_index:]
+
+    # ---------------------------------------------------------
+    # TRAIN ML MODEL
+    # ---------------------------------------------------------
+    model = LinearRegression()
+    model.fit(X_train, y_train)
+
+    # ---------------------------------------------------------
+    # TEST MODEL ON UNSEEN DATA
+    # ---------------------------------------------------------
+    test_predictions = model.predict(X_test)
+
+    # Visit counts cannot be negative.
+    test_predictions = np.maximum(
+        0,
+        test_predictions
+    )
+
+    # ---------------------------------------------------------
+    # Evaluation metrics
+    # ---------------------------------------------------------
+    mae = float(
+        mean_absolute_error(
+            y_test,
+            test_predictions
+        )
+    )
+
+    rmse = float(
+        np.sqrt(
+            mean_squared_error(
+                y_test,
+                test_predictions
+            )
+        )
+    )
+
+    r2 = float(
+        r2_score(
+            y_test,
+            test_predictions
+        )
+    )
+
+    # ---------------------------------------------------------
+    # FINAL MODEL
+    # Train on ALL historical data
+    # ---------------------------------------------------------
+    final_model = LinearRegression()
+    final_model.fit(X, y)
+
+    # ---------------------------------------------------------
+    # Predict next 7 days
+    # ---------------------------------------------------------
+    future_X = np.arange(
+        len(X),
+        len(X) + 7,
+        dtype=float
+    ).reshape(-1, 1)
+
+    future_predictions = final_model.predict(
+        future_X
+    )
+
+    future_predictions = np.maximum(
+        0,
+        future_predictions
+    )
+
+    # ---------------------------------------------------------
+    # Build prediction dates
+    # ---------------------------------------------------------
+    last_date = all_dates[-1]
+
+    final_predictions = []
+
+    for i, prediction in enumerate(
+        future_predictions
+    ):
+        prediction_date = (
+            last_date + timedelta(days=i + 1)
+        )
+
+        rounded_prediction = max(
+            0,
+            int(round(float(prediction)))
+        )
+
+        final_predictions.append({
+            'date': prediction_date.strftime('%Y-%m-%d'),
+            'predicted_visits': rounded_prediction,
+            'raw_prediction': round(
+                float(prediction),
+                2
+            )
+        })
+
+    # ---------------------------------------------------------
+    # Confidence
+    # ---------------------------------------------------------
+    mean_test_visits = float(
+        np.mean(y_test)
+    )
+
+    if mean_test_visits > 0:
+        relative_error = mae / mean_test_visits
+
+        confidence = max(
+            0.0,
+            min(
+                1.0,
+                1.0 - relative_error
+            )
+        )
+    else:
+        confidence = 0.0
+
+    return {
+        'accuracy': f'{max(0.0, r2) * 100:.1f}%',
+        'confidence': round(
+            confidence * 100,
+            1
+        ),
+
+        'metrics': {
+            'mae': round(mae, 3),
+            'rmse': round(rmse, 3),
+            'r2': round(r2, 3),
+            'training_samples': len(X_train),
+            'testing_samples': len(X_test),
+            'total_historical_days': len(X),
+            'evaluation_method': (
+                'chronological_80_20_split'
+            ),
+            'model': 'sklearn.linear_model.LinearRegression'
+        },
+
+        'predictions': final_predictions
+    }
 
 def get_late_arrivals_analytics(hostel=None, user_role=None, db=None):
     """
@@ -689,95 +871,313 @@ def _generate_predictive_insights(visits):
     return insights
 
 
-def _predict_next_week_visits(visits, user_role=None, requested_hostel=None):
-    """Predict next week's visits with manual linear regression"""
-    # Filter for super users
-    if user_role and user_role.startswith('super_') and requested_hostel:
-        filtered_visits = []
-        for visit in visits:
-            if (visit.get('student_hostel') == requested_hostel or 
-                visit.get('canteen_hostel') == requested_hostel):
-                filtered_visits.append(visit)
-        visits = filtered_visits
-    
-    if len(visits) < 7:
-        return {
-            'accuracy': 'Insufficient data (need at least 7 days)',
-            'predictions': [],
-            'confidence': 0,
-            'scope': 'hostel' if user_role and user_role.startswith('super_') else 'system'
-        }
-    
-    # Group visits by date
-    daily_visits = defaultdict(int)
-    for visit in visits:
-        date_str = visit['timestamp'].strftime('%Y-%m-%d')
-        daily_visits[date_str] += 1
-    
-    # Prepare data
-    dates = sorted([datetime.strptime(day, '%Y-%m-%d') for day in daily_visits.keys()])
-    visit_counts = [daily_visits[date.strftime('%Y-%m-%d')] for date in dates]
-    
-    first_date = dates[0]
-    X = np.array([(date - first_date).days for date in dates])
-    y = np.array(visit_counts)
-    
-    n = len(X)
-    if n == 0:
+def _predict_next_week_visits(
+    visits,
+    user_role=None,
+    requested_hostel=None
+):
+    """
+    Predict next week's unauthorized visits using
+    scikit-learn LinearRegression.
+
+    Model evaluation:
+        Chronological 80/20 train-test split.
+
+    Final prediction:
+        Model is retrained on all historical observations
+        and predicts the next 7 days.
+    """
+
+    # ---------------------------------------------------------
+    # Apply hostel filtering for super users
+    # ---------------------------------------------------------
+    if (
+        user_role
+        and user_role.startswith('super_')
+        and requested_hostel
+    ):
+        visits = [
+            visit
+            for visit in visits
+            if (
+                visit.get('student_hostel') == requested_hostel
+                or
+                visit.get('canteen_hostel') == requested_hostel
+            )
+        ]
+
+    scope = (
+        'hostel'
+        if user_role and user_role.startswith('super_')
+        else 'system'
+    )
+
+    if not visits:
         return {
             'accuracy': 'Insufficient data',
             'predictions': [],
             'confidence': 0,
-            'scope': 'hostel' if user_role and user_role.startswith('super_') else 'system'
+            'scope': scope
         }
-    
-    # Manual linear regression
-    sum_x = np.sum(X)
-    sum_y = np.sum(y)
-    sum_xy = np.sum(X * y)
-    sum_xx = np.sum(X * X)
-    
-    denominator = n * sum_xx - sum_x * sum_x
-    if denominator == 0:
-        m = 0
-        b = sum_y / n
-    else:
-        m = (n * sum_xy - sum_x * sum_y) / denominator
-        b = (sum_y - m * sum_x) / n
-    
-    # Predict next 7 days
+
+    # ---------------------------------------------------------
+    # Aggregate unauthorized visits by calendar date
+    # ---------------------------------------------------------
+    daily_visits = defaultdict(int)
+
+    for visit in visits:
+        timestamp = visit.get('timestamp')
+
+        if not timestamp:
+            continue
+
+        date_str = timestamp.strftime('%Y-%m-%d')
+        daily_visits[date_str] += 1
+
+    if not daily_visits:
+        return {
+            'accuracy': 'Insufficient data',
+            'predictions': [],
+            'confidence': 0,
+            'scope': scope
+        }
+
+    # ---------------------------------------------------------
+    # Create contiguous daily time series
+    # ---------------------------------------------------------
+    dates = sorted(
+        datetime.strptime(
+            day,
+            '%Y-%m-%d'
+        )
+        for day in daily_visits.keys()
+    )
+
+    first_date = dates[0]
     last_date = dates[-1]
-    future_dates = [last_date + timedelta(days=i+1) for i in range(7)]
-    future_X = np.array([(date - first_date).days for date in future_dates])
-    future_predictions = m * future_X + b
-    
-    # Calculate accuracy
-    predictions = m * X + b
-    mse = np.mean((y - predictions) ** 2)
-    accuracy = max(0.75, min(0.95, 1 - (mse / np.mean(y)) if np.mean(y) > 0 else 0.85))
-    
-    scope = 'hostel' if user_role and user_role.startswith('super_') else 'system'
-    
+
+    all_dates = []
+    current_date = first_date
+
+    while current_date <= last_date:
+        all_dates.append(current_date)
+        current_date += timedelta(days=1)
+
+    visit_counts = np.array([
+        daily_visits.get(
+            date.strftime('%Y-%m-%d'),
+            0
+        )
+        for date in all_dates
+    ], dtype=float)
+
+    # ---------------------------------------------------------
+    # Minimum data requirement
+    # ---------------------------------------------------------
+    if len(all_dates) < 10:
+        return {
+            'accuracy': 'Insufficient data',
+            'predictions': [],
+            'confidence': 0,
+            'scope': scope,
+            'metrics': {
+                'message': (
+                    'At least 10 daily observations are required '
+                    'for train/test evaluation'
+                ),
+                'historical_days': len(all_dates)
+            }
+        }
+
+    # ---------------------------------------------------------
+    # Prepare ML data
+    # ---------------------------------------------------------
+    X = np.arange(
+        len(visit_counts),
+        dtype=float
+    ).reshape(-1, 1)
+
+    y = visit_counts
+
+    # ---------------------------------------------------------
+    # Chronological 80/20 split
+    # ---------------------------------------------------------
+    split_index = max(
+        1,
+        int(len(X) * 0.8)
+    )
+
+    if split_index >= len(X):
+        split_index = len(X) - 1
+
+    X_train = X[:split_index]
+    y_train = y[:split_index]
+
+    X_test = X[split_index:]
+    y_test = y[split_index:]
+
+    # ---------------------------------------------------------
+    # TRAIN ML MODEL
+    # ---------------------------------------------------------
+    model = LinearRegression()
+    model.fit(
+        X_train,
+        y_train
+    )
+
+    # ---------------------------------------------------------
+    # TEST MODEL ON UNSEEN DATA
+    # ---------------------------------------------------------
+    test_predictions = model.predict(
+        X_test
+    )
+
+    test_predictions = np.maximum(
+        0,
+        test_predictions
+    )
+
+    # ---------------------------------------------------------
+    # Evaluation metrics
+    # ---------------------------------------------------------
+    mae = float(
+        mean_absolute_error(
+            y_test,
+            test_predictions
+        )
+    )
+
+    rmse = float(
+        np.sqrt(
+            mean_squared_error(
+                y_test,
+                test_predictions
+            )
+        )
+    )
+
+    r2 = float(
+        r2_score(
+            y_test,
+            test_predictions
+        )
+    )
+
+    # ---------------------------------------------------------
+    # FINAL MODEL
+    # Train on ALL historical data
+    # ---------------------------------------------------------
+    final_model = LinearRegression()
+    final_model.fit(
+        X,
+        y
+    )
+
+    # ---------------------------------------------------------
+    # Predict next 7 days
+    # ---------------------------------------------------------
+    future_dates = [
+        last_date + timedelta(days=i)
+        for i in range(1, 8)
+    ]
+
+    future_X = np.array([
+        (date - first_date).days
+        for date in future_dates
+    ], dtype=float).reshape(-1, 1)
+
+    future_predictions = final_model.predict(
+        future_X
+    )
+
+    future_predictions = np.maximum(
+        0,
+        future_predictions
+    )
+
+    # ---------------------------------------------------------
+    # Confidence
+    # ---------------------------------------------------------
+    mean_test_visits = float(
+        np.mean(y_test)
+    )
+
+    if mean_test_visits > 0:
+        relative_error = mae / mean_test_visits
+
+        confidence = max(
+            0.0,
+            min(
+                1.0,
+                1.0 - relative_error
+            )
+        )
+    else:
+        confidence = 0.0
+
+    # ---------------------------------------------------------
+    # Build predictions
+    # ---------------------------------------------------------
     final_predictions = []
-    for pred_date, pred in zip(future_dates, future_predictions):
-        bounded_pred = max(0, min(10, int(round(pred))))
-        confidence_band = max(1, int(round(pred * 0.2)))
-        
+
+    for pred_date, prediction in zip(
+        future_dates,
+        future_predictions
+    ):
+        raw_prediction = float(
+            prediction
+        )
+
+        bounded_prediction = max(
+            0,
+            int(round(raw_prediction))
+        )
+
+        confidence_band = max(
+            1,
+            int(round(rmse))
+        )
+
         final_predictions.append({
-            'date': pred_date.strftime('%Y-%m-%d'),
-            'day': pred_date.strftime('%A'),
-            'predicted_visits': bounded_pred,
-            'confidence_band': f'±{confidence_band}',
-            'raw_prediction': round(pred, 2)
+            'date': pred_date.strftime(
+                '%Y-%m-%d'
+            ),
+            'day': pred_date.strftime(
+                '%A'
+            ),
+            'predicted_visits': bounded_prediction,
+            'confidence_band': (
+                f'±{confidence_band}'
+            ),
+            'raw_prediction': round(
+                raw_prediction,
+                2
+            )
         })
-    
+
     return {
-        'accuracy': f'{accuracy * 100:.1f}%',
-        'confidence': round(accuracy * 100, 1),
+        'accuracy': f'{max(0.0, r2) * 100:.1f}%',
+        'confidence': round(
+            confidence * 100,
+            1
+        ),
         'scope': scope,
+
+        'metrics': {
+            'mae': round(mae, 3),
+            'rmse': round(rmse, 3),
+            'r2': round(r2, 3),
+            'training_samples': len(X_train),
+            'testing_samples': len(X_test),
+            'total_historical_days': len(X),
+            'evaluation_method': (
+                'chronological_80_20_split'
+            ),
+            'model': 'sklearn.linear_model.LinearRegression'
+        },
+
         'predictions': final_predictions
     }
-
 
 def _generate_ai_alerts(visits, db=None):
     """Generate AI-powered alerts for suspicious patterns"""

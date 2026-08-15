@@ -1607,7 +1607,7 @@ def record_canteen_visit(selected_role):
             'student_name': student.get('name', 'Unknown'),
             'type': 'canteen',
             'is_unauthorized': is_unauthorized,
-            'date': now.date(),
+            'date': datetime(now.year, now.month, now.day, tzinfo=INDIA_TZ),
             'hour': now.hour,
             'day_of_week': now.strftime('%A'),
             'offline_sync': is_offline_sync
@@ -2825,7 +2825,7 @@ def sync_canteen_visits():
                 'student_name': student.get('name', 'Unknown'),
                 'type': 'canteen',
                 'is_unauthorized': is_unauthorized,
-                'date': now.date(),
+                'date': datetime(now.year, now.month, now.day, tzinfo=INDIA_TZ),
                 'hour': now.hour,
                 'day_of_week': now.strftime('%A'),
                 'offline_sync': True

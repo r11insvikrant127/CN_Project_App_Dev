@@ -17,7 +17,8 @@ class PredictiveAnalyticsScreen extends StatefulWidget {
   PredictiveAnalyticsScreen({required this.userRole, required this.userHostel});
 
   @override
-  _PredictiveAnalyticsScreenState createState() => _PredictiveAnalyticsScreenState();
+  _PredictiveAnalyticsScreenState createState() =>
+      _PredictiveAnalyticsScreenState();
 }
 
 class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
@@ -66,23 +67,21 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
         _loadRealTimeAlerts(),
         _loadTrendData(),
       ]);
-      
-      setState(() {
-        _lastUpdated = DateTime.now();
-      });
+
+      if (mounted) {
+        setState(() {
+          _lastUpdated = DateTime.now();
+        });
+      }
     } catch (e) {
       print('Error loading all data: $e');
     } finally {
-      if (!silent) {
-        setState(() {
-          _isLoading = false;
-          _isRefreshing = false;
-        });
-      } else {
-        setState(() {
-          _isRefreshing = false;
-        });
-      }
+      if (!mounted) return;
+
+      setState(() {
+        _isLoading = false;
+        _isRefreshing = false;
+      });
     }
   }
 
@@ -92,7 +91,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
       String? token = prefs.getString('access_token');
 
       String url = '$kBaseUrl/api/analytics/predictive-insights?days=30';
-      
+
       // Role-based filtering
       if (widget.userRole.startsWith('super_')) {
         url += '&hostel=${widget.userHostel}';
@@ -110,14 +109,15 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         print('🔍 Predictive insights response: ${json.encode(data)}');
-        
+
         // Debug: Check predictions structure
         if (data['predictions'] != null) {
           print('🔍 Predictions data: ${json.encode(data['predictions'])}');
           print('🔍 Accuracy value: ${data['predictions']['accuracy']}');
-          print('🔍 Accuracy type: ${data['predictions']['accuracy'].runtimeType}');
+          print(
+              '🔍 Accuracy type: ${data['predictions']['accuracy'].runtimeType}');
         }
-        
+
         _filterAndUpdatePredictions(data);
       } else {
         print('❌ Predictive insights API error: ${response.statusCode}');
@@ -133,7 +133,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
       String? token = prefs.getString('access_token');
 
       String url = '$kBaseUrl/api/analytics/visit-trends?days=7';
-      
+
       // Role-based filtering
       if (widget.userRole.startsWith('super_')) {
         url += '&hostel=${widget.userHostel}';
@@ -146,24 +146,26 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
         },
       );
 
-      if (response.statusCode == 200) {
+      if (response.statusCode == 200 && mounted) {
         final data = json.decode(response.body);
+
         setState(() {
           _trendData = data;
-          _calculateTrendMetrics(data);
         });
+
+        _calculateTrendMetrics(data);
       }
     } catch (e) {
       print('Error loading trend data: $e');
-      
     }
   }
 
-
   void _calculateTrendMetrics(Map<String, dynamic> data) {
-    final trends = data['trends'] ?? [];
-    final summary = data['summary'] ?? {};
-    
+    final trends = data['trends'] is List ? data['trends'] as List : [];
+    final summary = data['summary'] is Map
+        ? Map<String, dynamic>.from(data['summary'])
+        : <String, dynamic>{};
+
     double totalActual = 0;
     double totalPredicted = 0;
     int dataPoints = 0;
@@ -171,26 +173,35 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
     for (var trend in trends) {
       if (trend['actual'] != null && trend['predicted'] != null) {
         // Safely convert to numbers
-        final actual = trend['actual'] is num ? trend['actual'].toDouble() : 
-                      double.tryParse(trend['actual'].toString()) ?? 0.0;
-        final predicted = trend['predicted'] is num ? trend['predicted'].toDouble() : 
-                         double.tryParse(trend['predicted'].toString()) ?? 0.0;
-        
+        final actual = trend['actual'] is num
+            ? trend['actual'].toDouble()
+            : double.tryParse(trend['actual'].toString()) ?? 0.0;
+        final predicted = trend['predicted'] is num
+            ? trend['predicted'].toDouble()
+            : double.tryParse(trend['predicted'].toString()) ?? 0.0;
+
         totalActual += actual;
         totalPredicted += predicted;
         dataPoints++;
       }
     }
 
-    double accuracy = dataPoints > 0 ? 
-        (1 - (totalActual - totalPredicted).abs() / totalActual) * 100 : 0;
+    double accuracy = dataPoints > 0 && totalActual > 0
+        ? (1 - (totalActual - totalPredicted).abs() / totalActual) * 100
+        : 0;
 
     // Safely extract summary values
-    final totalVisits = summary['total_visits'] is num ? summary['total_visits'].toInt() : 
-                       totalActual.round();
-    final trendPercentage = summary['trend_percentage'] is num ? summary['trend_percentage'].toDouble() : 15.2;
-    final averageDaily = summary['average_daily'] is num ? summary['average_daily'].toDouble() : 
-                        (totalActual / (dataPoints > 0 ? dataPoints : 1));
+    final totalVisits = summary['total_visits'] is num
+        ? summary['total_visits'].toInt()
+        : totalActual.round();
+    final trendPercentage = summary['trend_percentage'] is num
+        ? summary['trend_percentage'].toDouble()
+        : 0.0;
+    final averageDaily = summary['average_daily'] is num
+        ? summary['average_daily'].toDouble()
+        : (totalActual / (dataPoints > 0 ? dataPoints : 1));
+
+    if (!mounted) return;
 
     setState(() {
       _trendMetrics = {
@@ -198,36 +209,52 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
         'total_visits': totalVisits,
         'trend_percentage': trendPercentage,
         'average_daily': averageDaily.round(),
-        'scope': summary['scope'] ?? (widget.userRole.startsWith('super_') ? 'hostel' : 'system')
+        'scope': summary['scope'] ??
+            (widget.userRole.startsWith('super_') ? 'hostel' : 'system')
       };
     });
   }
 
   void _filterAndUpdatePredictions(Map<String, dynamic> data) {
-    if (data['predictions'] != null && data['predictions']['predictions'] != null) {
+    if (data['predictions'] != null &&
+        data['predictions']['predictions'] != null) {
       final now = DateTime.now();
       final today = DateTime(now.year, now.month, now.day);
-      
-      final filteredPredictions = (data['predictions']['predictions'] as List)
-          .where((prediction) {
-            try {
-              final predictionDate = _parsePredictionDate(prediction['date']);
-              return predictionDate != null && 
-                     !predictionDate.isBefore(today) && 
-                     predictionDate.difference(today).inDays <= 7;
-            } catch (e) {
-              return false;
-            }
-          })
-          .toList();
+
+      final predictionList = data['predictions']?['predictions'];
+
+      if (predictionList is! List) {
+        if (!mounted) return;
+
+        setState(() {
+          _predictiveData = data;
+        });
+        return;
+      }
+
+      final filteredPredictions = predictionList.where((prediction) {
+        try {
+          final predictionDate = _parsePredictionDate(prediction['date']);
+
+          return predictionDate != null &&
+              !predictionDate.isBefore(today) &&
+              predictionDate.difference(today).inDays <= 7;
+        } catch (e) {
+          return false;
+        }
+      }).toList();
+      if (!mounted) return;
 
       setState(() {
         _predictiveData = data;
-        if (_predictiveData != null && _predictiveData!['predictions'] != null) {
+        if (_predictiveData != null &&
+            _predictiveData!['predictions'] != null) {
           _predictiveData!['predictions']['predictions'] = filteredPredictions;
         }
       });
     } else {
+      if (!mounted) return;
+
       setState(() {
         _predictiveData = data;
       });
@@ -239,10 +266,14 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
     try {
       if (dateValue is String) {
         try {
-          return DateFormat('dd/MM/yyyy').parse(dateValue).toLocal(); // ✅ FIX: Convert to local
+          return DateFormat('dd/MM/yyyy')
+              .parse(dateValue)
+              .toLocal(); // ✅ FIX: Convert to local
         } catch (e) {
           try {
-            return DateFormat('yyyy-MM-dd').parse(dateValue).toLocal(); // ✅ FIX: Convert to local
+            return DateFormat('yyyy-MM-dd')
+                .parse(dateValue)
+                .toLocal(); // ✅ FIX: Convert to local
           } catch (e2) {
             final parsed = DateTime.tryParse(dateValue);
             return parsed?.toLocal(); // ✅ FIX: Convert to local
@@ -267,7 +298,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
         },
       );
 
-      if (response.statusCode == 200) {
+      if (response.statusCode == 200 && mounted) {
         setState(() {
           _realTimeAlerts = json.decode(response.body);
         });
@@ -280,7 +311,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    
+
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.background,
       appBar: AppBar(
@@ -289,9 +320,9 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
           children: [
             Text('AI Analytics Dashboard'),
             Text(
-              widget.userRole.startsWith('super_') 
-                ? 'Hostel ${widget.userHostel}'
-                : 'All Hostels Overview',
+              widget.userRole.startsWith('super_')
+                  ? 'Hostel ${widget.userHostel}'
+                  : 'All Hostels Overview',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.normal),
             ),
           ],
@@ -301,7 +332,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
         actions: [
           _buildLastUpdatedIndicator(isDark),
           IconButton(
-            icon: _isRefreshing 
+            icon: _isRefreshing
                 ? SizedBox(
                     width: 20,
                     height: 20,
@@ -325,13 +356,20 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
         children: [
           Text(
             'Auto Refresh',
-            style: TextStyle(fontSize: 10, color: Theme.of(context).colorScheme.onPrimary.withOpacity(0.7)),
+            style: TextStyle(
+                fontSize: 10,
+                color:
+                    Theme.of(context).colorScheme.onPrimary.withOpacity(0.7)),
           ),
           Text(
-            _lastUpdated != null 
-                ? DateFormat('HH:mm').format(_lastUpdated!) + ' IST' // ✅ FIX: Add IST
+            _lastUpdated != null
+                ? DateFormat('HH:mm').format(_lastUpdated!) +
+                    ' IST' // ✅ FIX: Add IST
                 : '--:--',
-            style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onPrimary, fontWeight: FontWeight.bold),
+            style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onPrimary,
+                fontWeight: FontWeight.bold),
           ),
         ],
       ),
@@ -351,21 +389,27 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
               shape: BoxShape.circle,
             ),
             child: CircularProgressIndicator(
-              valueColor: AlwaysStoppedAnimation<Color>(Theme.of(context).colorScheme.primary),
+              valueColor: AlwaysStoppedAnimation<Color>(
+                  Theme.of(context).colorScheme.primary),
               strokeWidth: 3,
             ),
           ),
           SizedBox(height: 20),
           Text(
             'Loading AI Analytics',
-            style: TextStyle(fontSize: 16, color: Theme.of(context).colorScheme.onSurfaceVariant, fontWeight: FontWeight.w500),
+            style: TextStyle(
+                fontSize: 16,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w500),
           ),
           SizedBox(height: 8),
           Text(
             widget.userRole.startsWith('super_')
                 ? 'Hostel ${widget.userHostel} Insights'
                 : 'All Hostels Overview',
-            style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+            style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
         ],
       ),
@@ -373,49 +417,48 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   }
 
   Widget _buildAnalyticsDashboard(bool isDark) {
-  final hasPredictions = _predictiveData != null && 
-      _predictiveData!['predictions'] != null &&
-      _predictiveData!['predictions']['predictions'] != null &&
-      (_predictiveData!['predictions']['predictions'] as List).isNotEmpty;
+    final predictionList = _predictiveData?['predictions']?['predictions'];
 
-  List<Widget> dashboardChildren = [
-    // Dashboard Header with Scope Info
-    _buildDashboardHeader(isDark),
-    SizedBox(height: 16),
-    
-    // Real-time Alerts Section
-    _buildRealTimeAlertsSection(isDark),
-    SizedBox(height: 20),
-  ];
+    final hasPredictions = predictionList is List && predictionList.isNotEmpty;
 
-  // Dynamic Visit Trends Section
-  if (_trendData != null) {
-    dashboardChildren.add(_buildTrendAnalysisSection(isDark));
-    dashboardChildren.add(SizedBox(height: 20));
-  }
-  
-  // Predictive Insights Section
-  if (_predictiveData != null) {
-    dashboardChildren.add(_buildPredictiveInsightsSection(isDark));
-    dashboardChildren.add(SizedBox(height: 20));
-  }
-  
-  // Future Predictions Section
-  if (hasPredictions) {
-    dashboardChildren.add(_buildPredictionsSection(isDark));
-    dashboardChildren.add(SizedBox(height: 20));
-  }
+    List<Widget> dashboardChildren = [
+      // Dashboard Header with Scope Info
+      _buildDashboardHeader(isDark),
+      SizedBox(height: 16),
 
-  return RefreshIndicator(
-    onRefresh: () => _loadAllData(),
-    child: SingleChildScrollView(
-      padding: EdgeInsets.all(16),
-      child: Column(
-        children: dashboardChildren,
+      // Real-time Alerts Section
+      _buildRealTimeAlertsSection(isDark),
+      SizedBox(height: 20),
+    ];
+
+    // Dynamic Visit Trends Section
+    if (_trendData != null) {
+      dashboardChildren.add(_buildTrendAnalysisSection(isDark));
+      dashboardChildren.add(SizedBox(height: 20));
+    }
+
+    // Predictive Insights Section
+    if (_predictiveData != null) {
+      dashboardChildren.add(_buildPredictiveInsightsSection(isDark));
+      dashboardChildren.add(SizedBox(height: 20));
+    }
+
+    // Future Predictions Section
+    if (hasPredictions) {
+      dashboardChildren.add(_buildPredictionsSection(isDark));
+      dashboardChildren.add(SizedBox(height: 20));
+    }
+
+    return RefreshIndicator(
+      onRefresh: () => _loadAllData(),
+      child: SingleChildScrollView(
+        padding: EdgeInsets.all(16),
+        child: Column(
+          children: dashboardChildren,
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   Widget _buildDashboardHeader(bool isDark) {
     return Card(
@@ -428,7 +471,10 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: isDark
-                ? [Colors.purple[900]!.withOpacity(0.3), Colors.blue[900]!.withOpacity(0.3)]
+                ? [
+                    Colors.purple[900]!.withOpacity(0.3),
+                    Colors.blue[900]!.withOpacity(0.3)
+                  ]
                 : [Colors.purple[50]!, Colors.blue[50]!],
           ),
           borderRadius: BorderRadius.circular(12),
@@ -443,7 +489,8 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
                   color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
                   shape: BoxShape.circle,
                 ),
-                child: Icon(Icons.analytics, color: Theme.of(context).colorScheme.primary, size: 24),
+                child: Icon(Icons.analytics,
+                    color: Theme.of(context).colorScheme.primary, size: 24),
               ),
               SizedBox(width: 12),
               Expanded(
@@ -452,14 +499,21 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
                   children: [
                     Text(
                       'AI Analytics Dashboard',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: isDark ? Colors.purple[100] : Colors.purple[800]),
+                      style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color:
+                              isDark ? Colors.purple[100] : Colors.purple[800]),
                     ),
                     SizedBox(height: 4),
                     Text(
                       widget.userRole.startsWith('super_')
                           ? 'Hostel ${widget.userHostel} • Real-time Insights'
                           : 'All Hostels • Comprehensive Overview',
-                      style: TextStyle(fontSize: 12, color: isDark ? Colors.purple[300] : Colors.purple[600]),
+                      style: TextStyle(
+                          fontSize: 12,
+                          color:
+                              isDark ? Colors.purple[300] : Colors.purple[600]),
                     ),
                   ],
                 ),
@@ -476,9 +530,13 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
     return Container(
       padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: widget.userRole.startsWith('super_') 
-            ? (isDark ? Colors.orange[900]!.withOpacity(0.3) : Colors.orange[100])
-            : (isDark ? Colors.purple[900]!.withOpacity(0.3) : Colors.purple[100]),
+        color: widget.userRole.startsWith('super_')
+            ? (isDark
+                ? Colors.orange[900]!.withOpacity(0.3)
+                : Colors.orange[100])
+            : (isDark
+                ? Colors.purple[900]!.withOpacity(0.3)
+                : Colors.purple[100]),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
@@ -487,7 +545,9 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
           Icon(
             widget.userRole.startsWith('super_') ? Icons.home : Icons.dashboard,
             size: 14,
-            color: widget.userRole.startsWith('super_') ? Colors.orange[800] : Colors.purple[800],
+            color: widget.userRole.startsWith('super_')
+                ? Colors.orange[800]
+                : Colors.purple[800],
           ),
           SizedBox(width: 4),
           Text(
@@ -495,7 +555,9 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.bold,
-              color: widget.userRole.startsWith('super_') ? Colors.orange[800] : Colors.purple[800],
+              color: widget.userRole.startsWith('super_')
+                  ? Colors.orange[800]
+                  : Colors.purple[800],
             ),
           ),
         ],
@@ -504,9 +566,12 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   }
 
   Widget _buildTrendAnalysisSection(bool isDark) {
-    final trends = _trendData?['trends'] ?? [];
+    final trends = _trendData?['trends'] is List
+        ? _trendData!['trends'] as List
+        : <dynamic>[];
     final metrics = _trendMetrics ?? {};
-    final scope = metrics['scope'] ?? (widget.userRole.startsWith('super_') ? 'hostel' : 'system');
+    final scope = metrics['scope'] ??
+        (widget.userRole.startsWith('super_') ? 'hostel' : 'system');
 
     return Card(
       elevation: 2,
@@ -533,13 +598,17 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
                     children: [
                       Text(
                         'Visit Trends & Patterns',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold),
                       ),
                       Text(
-                        scope == 'hostel' 
+                        scope == 'hostel'
                             ? 'Hostel ${widget.userHostel} visit patterns'
                             : 'All hostels visit patterns',
-                        style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        style: TextStyle(
+                            fontSize: 12,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant),
                       ),
                     ],
                   ),
@@ -548,8 +617,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
               ],
             ),
             SizedBox(height: 16),
-            
-            if (trends.isNotEmpty) 
+            if (trends.isNotEmpty)
               Column(
                 children: [
                   Container(
@@ -564,7 +632,8 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
               _buildEmptyState(
                 icon: Icons.analytics,
                 title: 'No Trend Data',
-                message: 'Visit trend data will appear as system collects more scan data',
+                message:
+                    'Visit trend data will appear as system collects more scan data',
                 isDark: isDark,
               ),
           ],
@@ -594,19 +663,33 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
           ),
           SizedBox(width: 4),
           Text(
-            'Live IST', // ✅ FIX: Add IST
-            style: TextStyle(fontSize: 10, color: Colors.green[700], fontWeight: FontWeight.bold),
+            'Updated IST', // ✅ FIX: Add IST
+            style: TextStyle(
+                fontSize: 10,
+                color: Colors.green[700],
+                fontWeight: FontWeight.bold),
           ),
         ],
       ),
     );
   }
 
+  double _toDouble(dynamic value) {
+    if (value is num) {
+      return value.toDouble();
+    }
+
+    return double.tryParse(value?.toString() ?? '') ?? 0.0;
+  }
+
   Widget _buildTrendChart(List<dynamic> trends) {
     // Ensure we have valid data and remove duplicates
-    final validTrends = trends.where((trend) => 
-      trend['day'] != null && trend['actual'] != null
-    ).toList();
+    final validTrends = trends
+        .where((trend) =>
+            trend['day'] != null &&
+            trend['actual'] != null &&
+            trend['predicted'] != null)
+        .toList();
 
     // Get unique days for x-axis labels
     final uniqueDays = <String>[];
@@ -616,15 +699,21 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
       final day = trend['day'].toString();
       if (!seenDays.contains(day)) {
         seenDays.add(day);
-          uniqueDays.add(day);
+        uniqueDays.add(day);
       }
     }
+
+    final maxActual = validTrends.isNotEmpty
+        ? validTrends.map((t) => _toDouble(t['actual'])).reduce(max)
+        : 0.0;
+
+    final chartMaxY = maxActual > 0 ? maxActual * 1.2 : 10.0;
+    final chartInterval = maxActual > 0 ? maxActual / 5 : 2.0;
 
     return LineChart(
       LineChartData(
         minY: 0,
-        maxY: validTrends.isNotEmpty ? 
-            (validTrends.map((t) => (t['actual'] as num).toDouble()).reduce(max) * 1.2) : 10,
+        maxY: chartMaxY,
         gridData: FlGridData(
           show: true,
           drawVerticalLine: true,
@@ -642,14 +731,15 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 40,
-              interval: validTrends.isNotEmpty ? 
-                  (validTrends.map((t) => (t['actual'] as num).toDouble()).reduce(max) / 5) : 2,
+              interval: chartInterval,
               getTitlesWidget: (value, meta) {
-                  return Padding(
+                return Padding(
                   padding: const EdgeInsets.only(right: 8.0),
                   child: Text(
                     value.toInt().toString(),
-                    style: TextStyle(fontSize: 10, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant),
                   ),
                 );
               },
@@ -667,7 +757,10 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
                     padding: const EdgeInsets.only(top: 8.0),
                     child: Text(
                       day.length > 3 ? day.substring(0, 3) : day,
-                      style: TextStyle(fontSize: 10, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      style: TextStyle(
+                          fontSize: 10,
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant),
                     ),
                   );
                 }
@@ -685,7 +778,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
         lineBarsData: [
           LineChartBarData(
             spots: validTrends.asMap().entries.map((entry) {
-              final actual = (entry.value['actual'] as num).toDouble();
+              final actual = _toDouble(entry.value['actual']);
               return FlSpot(entry.key.toDouble(), actual);
             }).toList(),
             isCurved: false,
@@ -706,7 +799,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
           ),
           LineChartBarData(
             spots: validTrends.asMap().entries.map((entry) {
-              final predicted = (entry.value['predicted'] as num).toDouble();
+              final predicted = _toDouble(entry.value['predicted']);
               return FlSpot(entry.key.toDouble(), predicted);
             }).toList(),
             isCurved: false,
@@ -734,8 +827,10 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   Widget _buildTrendMetricsGrid(Map<String, dynamic> metrics, bool isDark) {
     // Safely convert metrics to proper types
     final accuracy = metrics['accuracy'] is num ? metrics['accuracy'] : 0;
-    final totalVisits = metrics['total_visits'] is num ? metrics['total_visits'] : 0;
-    final trendPercentage = metrics['trend_percentage'] is num ? metrics['trend_percentage'] : 0;
+    final totalVisits =
+        metrics['total_visits'] is num ? metrics['total_visits'] : 0;
+    final trendPercentage =
+        metrics['trend_percentage'] is num ? metrics['trend_percentage'] : 0;
 
     return Container(
       padding: EdgeInsets.all(12),
@@ -769,7 +864,11 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
     );
   }
 
-  Widget _buildTrendMetricItem({required String value, required String label, required Color color, required IconData icon}) {
+  Widget _buildTrendMetricItem(
+      {required String value,
+      required String label,
+      required Color color,
+      required IconData icon}) {
     return Column(
       children: [
         Container(
@@ -781,89 +880,105 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
           child: Icon(icon, color: color, size: 18),
         ),
         SizedBox(height: 6),
-        Text(value, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color)),
-        Text(label, style: TextStyle(fontSize: 10, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        Text(value,
+            style: TextStyle(
+                fontSize: 14, fontWeight: FontWeight.bold, color: color)),
+        Text(label,
+            style: TextStyle(
+                fontSize: 10,
+                color: Theme.of(context).colorScheme.onSurfaceVariant)),
       ],
     );
   }
 
   Widget _buildRealTimeAlertsSection(bool isDark) {
-  final alerts = _realTimeAlerts?['alerts'] ?? [];
-  final totalVisits = _realTimeAlerts?['total_unauthorized_visits'] ?? 0;
+    final alerts = _realTimeAlerts?['alerts'] is List
+        ? _realTimeAlerts!['alerts'] as List
+        : <dynamic>[];
 
-  List<Widget> alertChildren = [];
+    final totalVisits = _realTimeAlerts?['total_unauthorized_visits'] is num
+        ? _realTimeAlerts!['total_unauthorized_visits']
+        : 0;
 
-  if (alerts.isEmpty) {
-    alertChildren.add(_buildEmptyAlertState(isDark));
-  } else {
-    alertChildren.addAll(
-      alerts.map<Widget>((alert) => _buildAlertCard(alert, isDark)).toList()
+    List<Widget> alertChildren = [];
+
+    if (alerts.isEmpty) {
+      alertChildren.add(_buildEmptyAlertState(isDark));
+    } else {
+      alertChildren.addAll(alerts
+          .map<Widget>((alert) => _buildAlertCard(alert, isDark))
+          .toList());
+    }
+
+    alertChildren.addAll([
+      SizedBox(height: 8),
+      Container(
+        padding: EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceVariant,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                'Total unauthorized visits:',
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            SizedBox(width: 8),
+            Text(
+              '$totalVisits',
+              style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.orange[700]),
+            ),
+          ],
+        ),
+      ),
+    ]);
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(Icons.notifications_active,
+                      color: Colors.orange, size: 20),
+                ),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Real-time Security Alerts',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                _buildTimeframeSelector(isDark),
+              ],
+            ),
+            SizedBox(height: 16),
+            Column(children: alertChildren),
+          ],
+        ),
+      ),
     );
   }
-
-  alertChildren.addAll([
-    SizedBox(height: 8),
-    Container(
-      padding: EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceVariant,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Expanded(
-            child: Text(
-              'Total unauthorized visits:',
-              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          SizedBox(width: 8),
-          Text(
-            '$totalVisits',
-            style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.orange[700]),
-          ),
-        ],
-      ),
-    ),
-  ]);
-
-  return Card(
-    elevation: 2,
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-    child: Padding(
-      padding: EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.orange.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(Icons.notifications_active, color: Colors.orange, size: 20),
-              ),
-              SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'Real-time Security Alerts',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              ),
-              _buildTimeframeSelector(isDark),
-            ],
-          ),
-          SizedBox(height: 16),
-          Column(children: alertChildren),
-        ],
-      ),
-    ),
-  );
-}
 
   Widget _buildTimeframeSelector(bool isDark) {
     return Container(
@@ -882,9 +997,12 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
             );
           }).toList(),
           onChanged: (value) {
+            if (value == null) return;
+
             setState(() {
-              _selectedTimeframe = value!;
+              _selectedTimeframe = value;
             });
+
             _loadRealTimeAlerts();
           },
         ),
@@ -905,7 +1023,8 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
           SizedBox(height: 8),
           Text(
             'No Security Alerts',
-            style: TextStyle(fontWeight: FontWeight.w500, color: Colors.green[800]),
+            style: TextStyle(
+                fontWeight: FontWeight.w500, color: Colors.green[800]),
           ),
           Text(
             'All systems are operating normally',
@@ -919,7 +1038,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   Widget _buildAlertCard(Map<String, dynamic> alert, bool isDark) {
     Color color = _getAlertColor(alert['priority']);
     IconData icon = _getAlertIcon(alert['type']);
-    
+
     return Container(
       margin: EdgeInsets.only(bottom: 12),
       padding: EdgeInsets.all(12),
@@ -948,7 +1067,9 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
                 SizedBox(height: 4),
                 Text(
                   'Priority: ${alert['priority']} • ${_formatAlertTime(alert['timestamp'])}',
-                  style: TextStyle(fontSize: 10, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  style: TextStyle(
+                      fontSize: 10,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
               ],
             ),
@@ -959,85 +1080,100 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   }
 
   Widget _buildPredictiveInsightsSection(bool isDark) {
-  final insights = _predictiveData?['insights'] ?? [];
-  final summary = _predictiveData?['summary'] ?? {};
-  final totalVisits = summary['total_visits_analyzed'] ?? 0;
+    final insights = _predictiveData?['insights'] is List
+        ? _predictiveData!['insights'] as List
+        : <dynamic>[];
 
-  List<Widget> insightChildren = [];
+    final summary = _predictiveData?['summary'] is Map
+        ? Map<String, dynamic>.from(_predictiveData!['summary'])
+        : <String, dynamic>{};
 
-  if (insights.isEmpty) {
-    insightChildren.add(_buildNoInsightsState(isDark));
-  } else {
-    insightChildren.addAll(
-      insights.map<Widget>((insight) => _buildInsightCard(insight, isDark)).toList()
-    );
-  }
+    final totalVisits = summary['total_visits_analyzed'] ?? 0;
 
-  return Card(
-    elevation: 2,
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-    child: Padding(
-      padding: EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(Icons.insights, color: Theme.of(context).colorScheme.primary, size: 20),
-              ),
-              SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'AI Insights & Patterns',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
-                    Text(
-                      widget.userRole.startsWith('super_')
-                          ? 'Hostel ${widget.userHostel} behavioral patterns'
-                          : 'Cross-hostel movement patterns',
-                      style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: 8),
-          Container(
-            padding: EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primary.withOpacity(0.05),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Row(
+    List<Widget> insightChildren = [];
+
+    if (insights.isEmpty) {
+      insightChildren.add(_buildNoInsightsState(isDark));
+    } else {
+      insightChildren.addAll(insights
+          .map<Widget>((insight) => _buildInsightCard(insight, isDark))
+          .toList());
+    }
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Icon(Icons.analytics, size: 14, color: Theme.of(context).colorScheme.primary),
-                SizedBox(width: 6),
+                Container(
+                  padding: EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color:
+                        Theme.of(context).colorScheme.primary.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(Icons.insights,
+                      color: Theme.of(context).colorScheme.primary, size: 20),
+                ),
+                SizedBox(width: 12),
                 Expanded(
-                  child: Text(
-                    'Analyzed $totalVisits visits over ${summary['analysis_period_days'] ?? 30} days',
-                    style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.primary),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'AI Insights & Patterns',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        widget.userRole.startsWith('super_')
+                            ? 'Hostel ${widget.userHostel} behavioral patterns'
+                            : 'Cross-hostel movement patterns',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant),
+                      ),
+                    ],
                   ),
                 ),
               ],
             ),
-          ),
-          SizedBox(height: 16),
-          Column(children: insightChildren),
-        ],
+            SizedBox(height: 8),
+            Container(
+              padding: EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.analytics,
+                      size: 14, color: Theme.of(context).colorScheme.primary),
+                  SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Analyzed $totalVisits visits over ${summary['analysis_period_days'] ?? 30} days',
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.primary),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(height: 16),
+            Column(children: insightChildren),
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   Widget _buildNoInsightsState(bool isDark) {
     return Container(
@@ -1048,17 +1184,21 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
       ),
       child: Column(
         children: [
-          Icon(Icons.analytics, color: Theme.of(context).colorScheme.primary, size: 48),
+          Icon(Icons.analytics,
+              color: Theme.of(context).colorScheme.primary, size: 48),
           SizedBox(height: 12),
           Text(
             'No Strong Patterns Detected',
-            style: TextStyle(fontWeight: FontWeight.w500, color: Theme.of(context).colorScheme.primary),
+            style: TextStyle(
+                fontWeight: FontWeight.w500,
+                color: Theme.of(context).colorScheme.primary),
           ),
           SizedBox(height: 8),
           Text(
             'The AI system is analyzing visit data and will surface insights as patterns emerge',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Theme.of(context).colorScheme.primary, fontSize: 12),
+            style: TextStyle(
+                color: Theme.of(context).colorScheme.primary, fontSize: 12),
           ),
         ],
       ),
@@ -1068,7 +1208,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   Widget _buildInsightCard(Map<String, dynamic> insight, bool isDark) {
     Color color = _getInsightColor(insight['type']);
     IconData icon = _getInsightIcon(insight['type']);
-    
+
     return Container(
       margin: EdgeInsets.only(bottom: 12),
       padding: EdgeInsets.all(12),
@@ -1100,11 +1240,17 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
                     children: [
                       Text(
                         'Confidence: ',
-                        style: TextStyle(fontSize: 10, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        style: TextStyle(
+                            fontSize: 10,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant),
                       ),
                       Text(
                         '${insight['confidence']}%',
-                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: color),
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: color),
                       ),
                     ],
                   ),
@@ -1117,107 +1263,125 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   }
 
   Widget _buildPredictionsSection(bool isDark) {
-  final predictions = _predictiveData?['predictions']?['predictions'] ?? [];
-  final accuracy = _predictiveData?['predictions']?['accuracy'];
-  
-  // Convert accuracy to double safely with better parsing
-  double accuracyValue = 0.0;
-  if (accuracy != null) {
-    if (accuracy is num) {
-      accuracyValue = accuracy.toDouble();
-    } else if (accuracy is String) {
-      // Handle string formats like "85.5%", "85.5", "85%"
-      String cleanAccuracy = accuracy.replaceAll('%', '').trim();
-      accuracyValue = double.tryParse(cleanAccuracy) ?? 0.0;
+    final predictions = _predictiveData?['predictions']?['predictions'] is List
+        ? _predictiveData!['predictions']['predictions'] as List
+        : <dynamic>[];
+    final accuracy = _predictiveData?['predictions']?['accuracy'];
+
+    // Convert accuracy to double safely with better parsing
+    double accuracyValue = 0.0;
+    if (accuracy != null) {
+      if (accuracy is num) {
+        accuracyValue = accuracy.toDouble();
+      } else if (accuracy is String) {
+        // Handle string formats like "85.5%", "85.5", "85%"
+        String cleanAccuracy = accuracy.replaceAll('%', '').trim();
+        accuracyValue = double.tryParse(cleanAccuracy) ?? 0.0;
+      }
     }
-  }
 
-  List<Widget> predictionChildren = [];
+    List<Widget> predictionChildren = [];
 
-  if (predictions.isEmpty) {
-    predictionChildren.add(_buildNoPredictionsState(isDark));
-  } else {
-    predictionChildren.addAll(
-      predictions.map<Widget>((prediction) => _buildPredictionCard(prediction, isDark)).toList()
-    );
-  }
+    if (predictions.isEmpty) {
+      predictionChildren.add(_buildNoPredictionsState(isDark));
+    } else {
+      predictionChildren.addAll(predictions
+          .map<Widget>((prediction) => _buildPredictionCard(prediction, isDark))
+          .toList());
+    }
 
-  return Card(
-    elevation: 2,
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-    child: Padding(
-      padding: EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(Icons.trending_up, color: Theme.of(context).colorScheme.primary, size: 20),
-              ),
-              SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Future Predictions',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
-                    SizedBox(height: 2),
-                    Text(
-                      'Next 7 days visit forecasts',
-                      style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  accuracyValue > 0 ? '${accuracyValue.toStringAsFixed(1)}%' : 'N/A',
-                  style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.primary, fontWeight: FontWeight.w500),
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: 8),
-          Container(
-            padding: EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primary.withOpacity(0.05),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Row(
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Icon(Icons.auto_awesome, size: 14, color: Theme.of(context).colorScheme.primary),
-                SizedBox(width: 6),
+                Container(
+                  padding: EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color:
+                        Theme.of(context).colorScheme.primary.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(Icons.trending_up,
+                      color: Theme.of(context).colorScheme.primary, size: 20),
+                ),
+                SizedBox(width: 12),
                 Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Future Predictions',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Next 7 days visit forecasts',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color:
+                        Theme.of(context).colorScheme.primary.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                   child: Text(
-                    'AI-powered predictions • Updates every 5 minutes',
-                    style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.primary),
-                    overflow: TextOverflow.ellipsis,
+                    accuracyValue > 0
+                        ? '${accuracyValue.toStringAsFixed(1)}%'
+                        : 'N/A',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: Theme.of(context).colorScheme.primary,
+                        fontWeight: FontWeight.w500),
                   ),
                 ),
               ],
             ),
-          ),
-          SizedBox(height: 12),
-          Column(children: predictionChildren),
-        ],
+            SizedBox(height: 8),
+            Container(
+              padding: EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.auto_awesome,
+                      size: 14, color: Theme.of(context).colorScheme.primary),
+                  SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'AI-powered predictions • Updates every 5 minutes',
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: Theme.of(context).colorScheme.primary),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(height: 12),
+            Column(children: predictionChildren),
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
+
   Widget _buildNoPredictionsState(bool isDark) {
     return Container(
       padding: EdgeInsets.all(20),
@@ -1231,7 +1395,8 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
           SizedBox(height: 12),
           Text(
             'No Future Predictions Available',
-            style: TextStyle(fontWeight: FontWeight.w500, color: Colors.orange[800]),
+            style: TextStyle(
+                fontWeight: FontWeight.w500, color: Colors.orange[800]),
           ),
           SizedBox(height: 8),
           Text(
@@ -1248,13 +1413,14 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
 
   Widget _buildPredictionCard(Map<String, dynamic> prediction, bool isDark) {
     DateTime? date = _parsePredictionDate(prediction['date']);
-    String formattedDate = date != null ? DateFormat('MMM dd').format(date) : 'Unknown';
+    String formattedDate =
+        date != null ? DateFormat('MMM dd').format(date) : 'Unknown';
     String dayName = date != null ? DateFormat('EEE').format(date) : '';
-  
+
     // Safely extract predicted visits
-    final predictedVisits = prediction['predicted_visits'] is num ? 
-                           prediction['predicted_visits'].toInt() : 
-                           int.tryParse(prediction['predicted_visits']?.toString() ?? '0') ?? 0;
+    final predictedVisits = prediction['predicted_visits'] is num
+        ? prediction['predicted_visits'].toInt()
+        : int.tryParse(prediction['predicted_visits']?.toString() ?? '0') ?? 0;
 
     return Container(
       margin: EdgeInsets.only(bottom: 8),
@@ -1262,7 +1428,8 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.primary.withOpacity(0.05),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.1)),
+        border: Border.all(
+            color: Theme.of(context).colorScheme.primary.withOpacity(0.1)),
       ),
       child: Row(
         children: [
@@ -1272,21 +1439,24 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
               color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
               shape: BoxShape.circle,
             ),
-            child: Icon(Icons.trending_up, color: Theme.of(context).colorScheme.primary, size: 16),
+            child: Icon(Icons.trending_up,
+                color: Theme.of(context).colorScheme.primary, size: 16),
           ),
-            SizedBox(width: 12),
+          SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                  Text(
+                Text(
                   '$dayName, $formattedDate',
                   style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                 ),
                 SizedBox(height: 2),
                 Text(
                   'Expected: $predictedVisits visits',
-                  style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
               ],
             ),
@@ -1299,7 +1469,10 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
             ),
             child: Text(
               _getPredictionLevel(predictedVisits),
-              style: TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                  fontSize: 10,
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold),
             ),
           ),
         ],
@@ -1319,7 +1492,11 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
     return 'LOW';
   }
 
-  Widget _buildEmptyState({required IconData icon, required String title, required String message, required bool isDark}) {
+  Widget _buildEmptyState(
+      {required IconData icon,
+      required String title,
+      required String message,
+      required bool isDark}) {
     return Container(
       padding: EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -1328,16 +1505,21 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
       ),
       child: Column(
         children: [
-          Icon(icon, color: Theme.of(context).colorScheme.onSurfaceVariant, size: 48),
+          Icon(icon,
+              color: Theme.of(context).colorScheme.onSurfaceVariant, size: 48),
           SizedBox(height: 8),
           Text(
             title,
-            style: TextStyle(fontWeight: FontWeight.w500, color: Theme.of(context).colorScheme.onSurfaceVariant),
+            style: TextStyle(
+                fontWeight: FontWeight.w500,
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
           Text(
             message,
             textAlign: TextAlign.center,
-            style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+            style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontSize: 12),
           ),
         ],
       ),
@@ -1346,54 +1528,64 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
 
   Color _getAlertColor(String priority) {
     switch (priority?.toLowerCase()) {
-      case 'high': return Colors.red;
-      case 'medium': return Colors.orange;
-      case 'low': return Colors.yellow[700]!;
-      default: return Colors.grey;
+      case 'high':
+        return Colors.red;
+      case 'medium':
+        return Colors.orange;
+      case 'low':
+        return Colors.yellow[700]!;
+      default:
+        return Colors.grey;
     }
   }
 
   IconData _getAlertIcon(String type) {
     switch (type?.toLowerCase()) {
-      case 'unauthorized': return Icons.security;
-      case 'suspicious': return Icons.warning;
-      case 'anomaly': return Icons.timeline;
-      default: return Icons.notifications;
+      case 'unauthorized':
+        return Icons.security;
+      case 'suspicious':
+        return Icons.warning;
+      case 'anomaly':
+        return Icons.timeline;
+      default:
+        return Icons.notifications;
     }
   }
 
   Color _getInsightColor(String type) {
     switch (type?.toLowerCase()) {
-      case 'peak_hours': return Colors.orange;
-      case 'frequent_visitor': return Colors.purple;
-      case 'pattern': return Theme.of(context).colorScheme.primary;
-      default: return Colors.green;
+      case 'peak_hours':
+        return Colors.orange;
+      case 'frequent_visitor':
+        return Colors.purple;
+      case 'pattern':
+        return Theme.of(context).colorScheme.primary;
+      default:
+        return Colors.green;
     }
   }
 
   IconData _getInsightIcon(String type) {
     switch (type?.toLowerCase()) {
-      case 'peak_hours': return Icons.access_time;
-      case 'frequent_visitor': return Icons.person;
-      case 'pattern': return Icons.timeline;
-      default: return Icons.insights;
+      case 'peak_hours':
+        return Icons.access_time;
+      case 'frequent_visitor':
+        return Icons.person;
+      case 'pattern':
+        return Icons.timeline;
+      default:
+        return Icons.insights;
     }
-  }
-
-  String _getRiskLevel(dynamic visits) {
-    final count = (visits is num) ? visits.toInt() : 0;
-    if (count > 50) return 'Very High';
-    if (count > 30) return 'High';
-    if (count > 15) return 'Medium';
-    return 'Low';
   }
 
   String _formatAlertTime(dynamic timestamp) {
     if (timestamp == null) return 'Unknown time';
     try {
       if (timestamp is String) {
-        final dateTime = DateTime.parse(timestamp).toLocal(); // ✅ FIX: Convert to local time
-        return DateFormat('HH:mm').format(dateTime) + ' IST'; // ✅ FIX: Add IST indicator
+        final dateTime =
+            DateTime.parse(timestamp).toLocal(); // ✅ FIX: Convert to local time
+        return DateFormat('HH:mm').format(dateTime) +
+            ' IST'; // ✅ FIX: Add IST indicator
       }
       return 'Recent';
     } catch (e) {

@@ -69,13 +69,9 @@ def get_student_with_role(roll_no, user_role, requested_role, db=None):
     
     # Get user's hostel from role
     user_hostel = user_role.split('_')[1].upper() if '_' in user_role else 'ALL'
-
-    # Hostel access rules:
-    # admin    -> all hostels
-    # super_*  -> own hostel only
-    # security_* -> own hostel only
-    # canteen_* -> all hostels
-    if user_role.startswith('super_') or user_role.startswith('security_'):
+    
+    # Check hostel access for non-admin roles
+    if user_role != 'admin' and '_' in user_role:
         if student.get('hostel') != user_hostel:
             return {
                 'message': 'This student does not belong to your hostel',

@@ -902,22 +902,37 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
         ? _realTimeAlerts!['alerts'] as List
         : <dynamic>[];
 
-    final totalVisits = _realTimeAlerts?['total_unauthorized_visits'] is num
-        ? _realTimeAlerts!['total_unauthorized_visits']
-        : 0;
+    // Total allowed-time security violations
+    final totalUnauthorizedVisits =
+        _realTimeAlerts?['total_unauthorized_visits'] is num
+            ? _realTimeAlerts!['total_unauthorized_visits']
+            : 0;
+
+    // Total unauthorized canteen visits
+    final totalUnauthorizedCanteenVisits =
+        _realTimeAlerts?['total_unauthorized_canteen_visits'] is num
+            ? _realTimeAlerts!['total_unauthorized_canteen_visits']
+            : 0;
 
     List<Widget> alertChildren = [];
 
     if (alerts.isEmpty) {
       alertChildren.add(_buildEmptyAlertState(isDark));
     } else {
-      alertChildren.addAll(alerts
-          .map<Widget>((alert) => _buildAlertCard(alert, isDark))
-          .toList());
+      alertChildren.addAll(
+        alerts
+            .map<Widget>((alert) => _buildAlertCard(alert, isDark))
+            .toList(),
+      );
     }
 
+    // ---------------------------------------------------------
+    // TOTALS
+    // ---------------------------------------------------------
     alertChildren.addAll([
       SizedBox(height: 8),
+
+      // Total unauthorized/time violations
       Container(
         padding: EdgeInsets.all(8),
         decoration: BoxDecoration(
@@ -931,18 +946,59 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
               child: Text(
                 'Total unauthorized visits:',
                 style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  fontSize: 12,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurfaceVariant,
+                ),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
             SizedBox(width: 8),
             Text(
-              '$totalVisits',
+              '$totalUnauthorizedVisits',
               style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.orange[700]),
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: Colors.orange[700],
+              ),
+            ),
+          ],
+        ),
+      ),
+
+      SizedBox(height: 6),
+
+      // Total unauthorized canteen visits
+      Container(
+        padding: EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceVariant,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                'Total unauthorized canteen visits:',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurfaceVariant,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            SizedBox(width: 8),
+            Text(
+              '$totalUnauthorizedCanteenVisits',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: Colors.red[700],
+              ),
             ),
           ],
         ),
@@ -951,7 +1007,9 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
 
     return Card(
       elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
       child: Padding(
         padding: EdgeInsets.all(16),
         child: Column(
@@ -965,14 +1023,20 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
                     color: Colors.orange.withOpacity(0.1),
                     shape: BoxShape.circle,
                   ),
-                  child: Icon(Icons.notifications_active,
-                      color: Colors.orange, size: 20),
+                  child: Icon(
+                    Icons.notifications_active,
+                    color: Colors.orange,
+                    size: 20,
+                  ),
                 ),
                 SizedBox(width: 12),
                 Expanded(
                   child: Text(
                     'Real-time Security Alerts',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
                 _buildTimeframeSelector(isDark),
@@ -1573,13 +1637,15 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
 
   String _formatAlertTime(dynamic timestamp) {
     if (timestamp == null) return 'Unknown time';
+
     try {
       if (timestamp is String) {
-        final dateTime =
-            DateTime.parse(timestamp).toLocal(); // ✅ FIX: Convert to local time
-        return DateFormat('HH:mm').format(dateTime) +
-            ' IST'; // ✅ FIX: Add IST indicator
+        final dateTime = DateTime.parse(timestamp).toLocal();
+
+        return DateFormat('dd MMM yyyy • HH:mm:ss').format(dateTime) +
+            ' IST';
       }
+
       return 'Recent';
     } catch (e) {
       return 'Recent';

@@ -1260,16 +1260,20 @@ def get_ai_realtime_alerts():
 
         device_id, user_role = identity_string.split(':', 1)
 
-        # Only admin and hostel supervisors can access AI security alerts
+        # Only admin and hostel supervisors can access security alerts
         if user_role != 'admin' and not user_role.startswith('super_'):
             return jsonify({'message': 'Access denied'}), 403
 
+        # Selected timeframe from Flutter dropdown:
+        # 1, 2, 6, 24 hours, etc.
         hours = request.args.get('hours', default=2, type=int)
         hours = max(1, min(hours, 168))
 
         cutoff_time = datetime.now(INDIA_TZ) - timedelta(hours=hours)
 
-        # Fetch actual security alerts from MongoDB
+        # ---------------------------------------------------------
+        # Fetch alerts from MongoDB for selected timeframe
+        # ---------------------------------------------------------
         query = {
             'timestamp': {'$gte': cutoff_time}
         }
@@ -1281,7 +1285,9 @@ def get_ai_realtime_alerts():
             ).sort('timestamp', -1).limit(50)
         )
 
+        # ---------------------------------------------------------
         # Hostel-based filtering for supervisors
+        # ---------------------------------------------------------
         if user_role.startswith('super_'):
             supervisor_hostel = user_role.split('_', 1)[1].upper()
 
@@ -1307,15 +1313,47 @@ def get_ai_realtime_alerts():
                     filtered_alerts.append(alert)
 
             alerts = filtered_alerts
+        # ---------------------------------------------------------
+        # Calculate separate real-time totals
+        # ---------------------------------------------------------
 
+        # Total unauthorized/time-limit violations
+        total_unauthorized_visits = sum(
+            1
+            for alert in alerts
+            if alert.get('type') == 'allowed_time_violation'
+        )
+
+        # Total unauthorized CANTEEN visits
+        total_unauthorized_canteen_visits = sum(
+            1
+            for alert in alerts
+            if alert.get('type') == 'unauthorized_visit'
+        )
+
+        # ---------------------------------------------------------
+        # Return actual MongoDB-derived values
+        # ---------------------------------------------------------
         return jsonify({
             'alerts': alerts,
+
+            # Total security violations
+            'total_unauthorized_visits': total_unauthorized_visits,
+
+            # Only unauthorized canteen violations
+            'total_unauthorized_canteen_visits':
+                total_unauthorized_canteen_visits,
+
+            # Keep this for compatibility with existing Flutter code
             'total_alerts': len(alerts),
+
+            # Tell Flutter which timeframe was used
             'timeframe_hours': hours
         }), 200
 
     except Exception as e:
         print(f"❌ Error loading real-time alerts: {e}")
+
         return jsonify({
             'message': f'Error: {str(e)}'
         }), 500

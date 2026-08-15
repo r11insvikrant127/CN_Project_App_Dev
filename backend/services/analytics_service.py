@@ -1272,7 +1272,7 @@ def _generate_ai_alerts(visits, db=None):
             seen_messages.add(alert['message'])
     
     # Store alerts
-    if db and unique_alerts:
+    if db is not None and unique_alerts:
         for alert in unique_alerts:
             if 'timestamp' not in alert:
                 alert['timestamp'] = get_ist_now()

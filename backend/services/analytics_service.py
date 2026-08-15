@@ -819,6 +819,11 @@ def _generate_predictive_insights(visits):
         student_hostel = visit.get('student_hostel', 'Unknown')
         canteen_hostel = visit.get('canteen_hostel', 'Unknown')
 
+        # MongoDB may store hostel references as ObjectId.
+        # Convert them to strings before putting them into the API response.
+        student_hostel = str(student_hostel) if student_hostel is not None else 'Unknown'
+        canteen_hostel = str(canteen_hostel) if canteen_hostel is not None else 'Unknown'
+
         visit_timestamp = normalize_datetime_to_ist(
             visit.get('timestamp')
         )
@@ -1220,6 +1225,11 @@ def _generate_ai_alerts(visits, db=None):
 
     for visit in visits:
         student_hostel = visit.get('student_hostel', 'Unknown')
+
+        if student_hostel is None:
+            student_hostel = 'Unknown'
+        else:
+            student_hostel = str(student_hostel)
 
         visit_timestamp = visit.get('timestamp')
 

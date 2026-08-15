@@ -766,7 +766,12 @@ def get_predictive_insights(days=30, hostel=None, user_role=None, db=None):
         ]
     
     # Get all unauthorized visits for analysis
-    visits = list(db.canteen_visits.find(match_filter))
+    visits = list(
+        db.canteen_visits.find(
+            match_filter,
+            {'_id': 0}
+        )
+    )
 
     # Normalize all MongoDB timestamps to timezone-aware IST
     for visit in visits:

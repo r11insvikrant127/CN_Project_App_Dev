@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import 'dart:async';
+import 'socket_service.dart';
 
 import 'dart:math'; // Add this line
 
@@ -32,21 +33,43 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   DateTime? _lastUpdated;
   bool _isRefreshing = false;
 
+  void _handleRealtimeViolation(dynamic data) {
+    if (!mounted || _isRefreshing) return;
+
+    print('🔴 REAL-TIME VIOLATION RECEIVED IN ANALYTICS: $data');
+
+    // Immediately refresh analytics after a new violation.
+    _loadAllData(silent: true);
+  }
+
   @override
   void initState() {
     super.initState();
+
     _loadAllData();
+
+    // Real-time updates through existing WebSocket.
+    SocketService.listenForViolationAlerts(
+      _handleRealtimeViolation,
+    );
+
+    // Keep a slow fallback refresh in case a WebSocket event is missed.
     _setupAutoRefresh();
   }
 
   @override
   void dispose() {
     _refreshTimer?.cancel();
+
+    SocketService.removeViolationAlertListener(
+      _handleRealtimeViolation,
+    );
+
     super.dispose();
   }
 
   void _setupAutoRefresh() {
-    _refreshTimer = Timer.periodic(Duration(minutes: 5), (timer) {
+    _refreshTimer = Timer.periodic(Duration(minutes: 15), (timer) {
       if (mounted && !_isRefreshing) {
         _loadAllData(silent: true);
       }
@@ -147,6 +170,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
       );
 
       if (response.statusCode == 200 && mounted) {
+        print('🔍 VISIT TRENDS RESPONSE: ${response.body}');
         final data = json.decode(response.body);
 
         setState(() {
@@ -161,61 +185,32 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   }
 
   void _calculateTrendMetrics(Map<String, dynamic> data) {
-    final trends = data['trends'] is List ? data['trends'] as List : [];
     final summary = data['summary'] is Map
         ? Map<String, dynamic>.from(data['summary'])
         : <String, dynamic>{};
 
-    double totalActual = 0;
-    double totalPredicted = 0;
-    int dataPoints = 0;
-
-    for (var trend in trends) {
-      if (trend['actual'] != null && trend['predicted'] != null) {
-        // Safely convert to numbers
-        final actual = trend['actual'] is num
-            ? trend['actual'].toDouble()
-            : double.tryParse(trend['actual'].toString()) ?? 0.0;
-        final predicted = trend['predicted'] is num
-            ? trend['predicted'].toDouble()
-            : double.tryParse(trend['predicted'].toString()) ?? 0.0;
-
-        totalActual += actual;
-        totalPredicted += predicted;
-        dataPoints++;
-      }
-    }
-
-    double accuracy = 0.0;
-
-    if (dataPoints > 0 && totalActual > 0) {
-      accuracy =
-          (1 - (totalActual - totalPredicted).abs() / totalActual) * 100;
-
-      accuracy = accuracy.clamp(0.0, 100.0);
-    }
-
-    // Safely extract summary values
+    // Use backend-provided summary values.
     final totalVisits = summary['total_visits'] is num
         ? summary['total_visits'].toInt()
-        : totalActual.round();
+        : 0;
+
     final trendPercentage = summary['trend_percentage'] is num
         ? summary['trend_percentage'].toDouble()
         : 0.0;
+
     final averageDaily = summary['average_daily'] is num
         ? summary['average_daily'].toDouble()
-        : (totalActual / (dataPoints > 0 ? dataPoints : 1));
+        : 0.0;
 
     if (!mounted) return;
 
     setState(() {
       _trendMetrics = {
-        'accuracy': accuracy.round(),
         'total_visits': totalVisits,
         'trend_percentage': trendPercentage,
         'average_daily': averageDaily.round(),
         'scope': summary['scope'] ??
-            (widget.userRole.startsWith('super_') ? 'hostel' : 'system')
+            (widget.userRole.startsWith('super_') ? 'hostel' : 'system'),
       };
     });
   }
@@ -304,6 +299,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
       );
 
       if (response.statusCode == 200 && mounted) {
+        print('🔍 REAL-TIME ALERTS RESPONSE: ${response.body}');
         setState(() {
           _realTimeAlerts = json.decode(response.body);
         });
@@ -360,7 +356,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(
-            'Auto Refresh',
+            'Live Updates',
             style: TextStyle(
                 fontSize: 10,
                 color:
@@ -449,7 +445,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
     }
 
     // Future Predictions Section
-    if (hasPredictions) {
+    if (_predictiveData != null) {
       dashboardChildren.add(_buildPredictionsSection(isDark));
       dashboardChildren.add(SizedBox(height: 20));
     }
@@ -690,11 +686,10 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   Widget _buildTrendChart(List<dynamic> trends) {
     // Ensure we have valid data and remove duplicates
     final validTrends = trends
-        .where((trend) =>
-            trend['day'] != null &&
-            trend['actual'] != null &&
-            trend['predicted'] != null)
-        .toList();
+      .where((trend) =>
+          trend['day'] != null &&
+          trend['actual'] != null)
+      .toList();
 
     // Get unique days for x-axis labels
     final uniqueDays = <String>[];
@@ -802,40 +797,43 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
               },
             ),
           ),
-          LineChartBarData(
-            spots: validTrends.asMap().entries.map((entry) {
-              final predicted = _toDouble(entry.value['predicted']);
-              return FlSpot(entry.key.toDouble(), predicted);
-            }).toList(),
-            isCurved: false,
-            color: Colors.orange,
-            barWidth: 2,
-            dashArray: [5, 5],
-            belowBarData: BarAreaData(show: false),
-            dotData: FlDotData(
-              show: true,
-              getDotPainter: (spot, percent, barData, index) {
-                return FlDotCirclePainter(
-                  radius: 3,
-                  color: Colors.orange,
-                  strokeWidth: 1,
-                  strokeColor: Theme.of(context).colorScheme.background,
-                );
-              },
+          if (validTrends.any((t) => t['predicted'] != null))
+            LineChartBarData(
+              spots: validTrends
+                  .asMap()
+                  .entries
+                  .where((entry) => entry.value['predicted'] != null)
+                  .map((entry) {
+                final predicted = _toDouble(entry.value['predicted']);
+                return FlSpot(entry.key.toDouble(), predicted);
+              }).toList(),
+              isCurved: false,
+              color: Colors.orange,
+              barWidth: 2,
+              dashArray: [5, 5],
+              belowBarData: BarAreaData(show: false),
+              dotData: FlDotData(show: true),
             ),
-          ),
         ],
       ),
     );
   }
 
-  Widget _buildTrendMetricsGrid(Map<String, dynamic> metrics, bool isDark) {
-    // Safely convert metrics to proper types
-    final accuracy = metrics['accuracy'] is num ? metrics['accuracy'] : 0;
+  Widget _buildTrendMetricsGrid(
+    Map<String, dynamic> metrics, bool isDark) {
+
     final totalVisits =
         metrics['total_visits'] is num ? metrics['total_visits'] : 0;
+
     final trendPercentage =
-        metrics['trend_percentage'] is num ? metrics['trend_percentage'] : 0;
+        metrics['trend_percentage'] is num
+            ? metrics['trend_percentage']
+            : 0;
+
+    final averageDaily =
+        metrics['average_daily'] is num
+            ? metrics['average_daily']
+            : 0;
 
     return Container(
       padding: EdgeInsets.all(12),
@@ -847,19 +845,22 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
           _buildTrendMetricItem(
-            value: '$accuracy%',
-            label: 'Model Accuracy',
-            color: Colors.green,
-            icon: Icons.verified,
-          ),
-          _buildTrendMetricItem(
             value: '$totalVisits',
             label: 'Total Visits',
             color: Theme.of(context).colorScheme.primary,
             icon: Icons.people,
           ),
+
           _buildTrendMetricItem(
-            value: '+$trendPercentage%',
+            value: '$averageDaily',
+            label: 'Daily Average',
+            color: Colors.green,
+            icon: Icons.calendar_today,
+          ),
+
+          _buildTrendMetricItem(
+            value: '${trendPercentage >= 0 ? '+' : ''}'
+                '${trendPercentage.toStringAsFixed(1)}%',
             label: 'Weekly Trend',
             color: Colors.orange,
             icon: Icons.trending_up,
@@ -1271,19 +1272,8 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
     final predictions = _predictiveData?['predictions']?['predictions'] is List
         ? _predictiveData!['predictions']['predictions'] as List
         : <dynamic>[];
-    final accuracy = _predictiveData?['predictions']?['accuracy'];
-
-    // Convert accuracy to double safely with better parsing
-    double accuracyValue = 0.0;
-    if (accuracy != null) {
-      if (accuracy is num) {
-        accuracyValue = accuracy.toDouble();
-      } else if (accuracy is String) {
-        // Handle string formats like "85.5%", "85.5", "85%"
-        String cleanAccuracy = accuracy.replaceAll('%', '').trim();
-        accuracyValue = double.tryParse(cleanAccuracy) ?? 0.0;
-      }
-    }
+    final accuracy =
+      _predictiveData?['predictions']?['accuracy']?.toString() ?? 'N/A';
 
     List<Widget> predictionChildren = [];
 
@@ -1344,9 +1334,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    accuracyValue > 0
-                        ? '${accuracyValue.toStringAsFixed(1)}%'
-                        : 'N/A',
+                    accuracy,
                     style: TextStyle(
                         fontSize: 11,
                         color: Theme.of(context).colorScheme.primary,
@@ -1369,7 +1357,7 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
                   SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'AI-powered predictions • Updates every 5 minutes',
+                      'AI-powered predictions • Live updates with 15-minute fallback',
                       style: TextStyle(
                           fontSize: 11,
                           color: Theme.of(context).colorScheme.primary),

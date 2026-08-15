@@ -1025,17 +1025,27 @@ def _predict_next_week_visits(
     # Minimum data requirement
     # ---------------------------------------------------------
     if len(all_dates) < 10:
+        historical_days = len(all_dates)
+        required_days = 10
+
         return {
-            'accuracy': 'Insufficient data',
+            'accuracy': 'Insufficient historical data',
             'predictions': [],
             'confidence': 0,
             'scope': scope,
             'metrics': {
-                'message': (
-                    'At least 10 daily observations are required '
-                    'for train/test evaluation'
+                'historical_days': historical_days,
+                'required_days': required_days,
+                'days_remaining': max(
+                    0,
+                    required_days - historical_days
                 ),
-                'historical_days': len(all_dates)
+                'message': (
+                    f'{historical_days} of {required_days} required '
+                    'daily observations are available. '
+                    'Predictions will be enabled after sufficient '
+                    'historical data is collected.'
+                )
             }
         }
 

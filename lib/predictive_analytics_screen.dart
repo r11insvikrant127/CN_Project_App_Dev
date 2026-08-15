@@ -1597,13 +1597,22 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
   }
 
   IconData _getAlertIcon(String type) {
-    switch (type?.toLowerCase()) {
+    switch (type.toLowerCase()) {
+      case 'unauthorized_visit':
+        return Icons.restaurant;
+
+      case 'allowed_time_violation':
+        return Icons.timer_off;
+
       case 'unauthorized':
         return Icons.security;
+
       case 'suspicious':
         return Icons.warning;
+
       case 'anomaly':
         return Icons.timeline;
+
       default:
         return Icons.notifications;
     }

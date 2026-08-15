@@ -29,7 +29,7 @@ class _ScanScreenState extends State<ScanScreen> {
   bool _torchEnabled = false;
   Map<String, dynamic>? _scannedStudent;
   bool _showStudentInfo = false;
-  
+
   final StudentDBHelper _studentDB = StudentDBHelper();
   final NetworkService _networkService = NetworkService();
   final SyncService _syncService = SyncService();
@@ -42,7 +42,7 @@ class _ScanScreenState extends State<ScanScreen> {
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    
+
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -83,7 +83,7 @@ class _ScanScreenState extends State<ScanScreen> {
               if (snapshot.hasData) {
                 final status = snapshot.data!;
                 final studentCount = status['total_student_count'] ?? 0;
-                
+
                 if (studentCount > 0) {
                   return Tooltip(
                     message: '📱 $studentCount students available offline',
@@ -130,17 +130,35 @@ class _ScanScreenState extends State<ScanScreen> {
           controller: cameraController,
           onDetect: (capture) {
             final List<Barcode> barcodes = capture.barcodes;
-            for (final barcode in barcodes) {
-              if (barcode.rawValue != null && barcode.rawValue != _lastScanned) {
-                if (!mounted) return;
 
-                _safeSetState(() {
-                  _lastScanned = barcode.rawValue!;
-                  _isScanning = true;
-                });
-                
-                _processScan(barcode.rawValue!);
+            // Ignore any new detection while the current scan is being processed.
+            if (_isScanning) {
+              print(
+                  '🔒 DEBUG: Scan already in progress - ignoring duplicate scan');
+              return;
+            }
+
+            for (final barcode in barcodes) {
+              final qrData = barcode.rawValue;
+
+              if (qrData == null || qrData.isEmpty) {
+                continue;
               }
+
+              if (qrData == _lastScanned) {
+                print('🔒 DEBUG: Duplicate QR detected - ignoring: $qrData');
+                continue;
+              }
+
+              if (!mounted) return;
+
+              _safeSetState(() {
+                _lastScanned = qrData;
+                _isScanning = true;
+              });
+
+              _processScan(qrData);
+              break;
             }
           },
         ),
@@ -155,7 +173,8 @@ class _ScanScreenState extends State<ScanScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  CircularProgressIndicator(valueColor: AlwaysStoppedAnimation(Colors.white)),
+                  CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation(Colors.white)),
                   SizedBox(height: 16),
                   Text(
                     'Processing scan...',
@@ -173,7 +192,7 @@ class _ScanScreenState extends State<ScanScreen> {
             builder: (context, snapshot) {
               final isOnline = snapshot.data ?? true;
               if (isOnline) return SizedBox.shrink();
-              
+
               return Container(
                 padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
@@ -209,13 +228,15 @@ class _ScanScreenState extends State<ScanScreen> {
             builder: (context, snapshot) {
               if (snapshot.hasData) {
                 final status = snapshot.data!;
-                final isOnline = snapshot.connectionState != ConnectionState.waiting 
-                    ? true : false;
-                
+                final isOnline =
+                    snapshot.connectionState != ConnectionState.waiting
+                        ? true
+                        : false;
+
                 final studentCount = status['total_student_count'] ?? 0;
                 final currentHostelCount = status['current_hostel_count'] ?? 0;
                 final syncNeeded = status['sync_needed'] ?? false;
-                
+
                 if (!isOnline && studentCount > 0) {
                   return Container(
                     padding: EdgeInsets.all(12),
@@ -288,10 +309,6 @@ class _ScanScreenState extends State<ScanScreen> {
 
       if (!mounted) return;
 
-      _safeSetState(() {
-        _isScanning = true;
-      });
-
       if (isOnline) {
         print('🔍 DEBUG: 🌐 ONLINE - fetching complete data from server...');
         await _fetchCompleteDataFromServer(qrData);
@@ -328,13 +345,13 @@ class _ScanScreenState extends State<ScanScreen> {
       final prefs = await SharedPreferences.getInstance();
       final String? token = prefs.getString('access_token');
       final String? deviceId = prefs.getString('device_id');
-      
+
       if (token == null) {
         throw Exception('No authentication token');
       }
-      
+
       print('🔍 DEBUG: 📡 Fetching COMPLETE student data from server...');
-      
+
       final response = await http.get(
         Uri.parse('$kBaseUrl/api/student/$rollNo/${widget.role}'),
         headers: {
@@ -346,7 +363,7 @@ class _ScanScreenState extends State<ScanScreen> {
       if (response.statusCode == 200) {
         final studentData = json.decode(response.body);
         print('🔍 DEBUG: ✅ Server response successful: ${studentData['name']}');
-        
+
         // ✅ CRITICAL: Save only basic info (3 fields) to local database for offline use
         if (studentData['name'] != null && studentData['hostel'] != null) {
           await _studentDB.saveStudent(
@@ -354,34 +371,38 @@ class _ScanScreenState extends State<ScanScreen> {
             name: studentData['name'],
             hostel: studentData['hostel'],
           );
-          print('🔍 DEBUG: 💾 Basic student info saved to local DB for offline use');
+          print(
+              '🔍 DEBUG: 💾 Basic student info saved to local DB for offline use');
         }
-        
+
         // Add metadata to identify source
         studentData['data_source'] = 'server_complete';
         studentData['offline_mode'] = false;
         studentData['timestamp'] = DateTime.now().toIso8601String();
-        
+
+        // Canteen visit: record successful scan
+        if (widget.role.startsWith('canteen_')) {
+          _scannedStudent = studentData;
+          await _recordCanteenVisit();
+        }
+
         // Process and display the student data
         _processAndDisplayStudentData(studentData);
-        
       } else if (response.statusCode == 404) {
         // Student not found on server
         print('🔍 DEBUG: ❌ Student not found on server');
         _handleStudentNotFound(rollNo, 'Student not found on server');
-        
       } else if (response.statusCode == 403) {
         // Access denied
         final errorData = json.decode(response.body);
         print('🔍 DEBUG: 🔒 Access denied: ${errorData['message']}');
         _showStudentScanResult(errorData as Map<String, dynamic>);
-        
       } else {
         // Server error, fallback to local data
         print('🔍 DEBUG: ⚠️ Server error, trying local cache...');
-        await _tryLocalCacheWithFallback(rollNo, 'Server error ${response.statusCode}');
+        await _tryLocalCacheWithFallback(
+            rollNo, 'Server error ${response.statusCode}');
       }
-      
     } catch (e) {
       print('🔍 DEBUG: ❌ Network error, trying local cache: $e');
       await _tryLocalCacheWithFallback(rollNo, 'Network error: $e');
@@ -395,12 +416,12 @@ class _ScanScreenState extends State<ScanScreen> {
   // ✅ NEW: Check local database only (for offline mode)
   Future<void> _checkLocalDatabaseOnly(String rollNo) async {
     print('🔍 DEBUG: 🔎 Searching in local database (OFFLINE MODE)...');
-    
+
     final localStudent = await _studentDB.getStudent(rollNo);
-    
+
     if (localStudent != null) {
       print('🔍 DEBUG: ✅ Found student in local DB: ${localStudent['name']}');
-      
+
       final Map<String, dynamic> studentData = {
         'roll_no': localStudent['roll_no'],
         'name': localStudent['name'],
@@ -409,33 +430,40 @@ class _ScanScreenState extends State<ScanScreen> {
         'offline_mode': true,
         'data_source': 'local_cache_offline',
         'limited_data': true,
-        'message': '📱 Offline mode - showing cached data. Connect to internet for complete details.',
+        'message':
+            '📱 Offline mode - showing cached data. Connect to internet for complete details.',
         'timestamp': DateTime.now().toIso8601String(),
       };
-      
+
+      // Canteen has no hostel restriction
+      if (widget.role.startsWith('canteen_')) {
+        _scannedStudent = studentData;
+        await _recordCanteenVisit();
+      }
+
       // Check hostel access
       _checkHostelAccessAndDisplay(studentData);
-      
     } else {
       print('🔍 DEBUG: ❌ Student not found in local database (OFFLINE)');
-      
+
       _handleStudentNotFound(rollNo, 'Student not found in offline database');
     }
-    
+
     _safeSetState(() {
       _isScanning = false;
     });
   }
 
   // ✅ NEW: Try local cache when server fails (online but server error)
-  Future<void> _tryLocalCacheWithFallback(String rollNo, String errorMessage) async {
+  Future<void> _tryLocalCacheWithFallback(
+      String rollNo, String errorMessage) async {
     print('🔍 DEBUG: 🔄 Server failed, checking local cache as fallback...');
-    
+
     final localStudent = await _studentDB.getStudent(rollNo);
-    
+
     if (localStudent != null) {
       print('🔍 DEBUG: ✅ Found fallback data in local cache');
-      
+
       final Map<String, dynamic> studentData = {
         'roll_no': localStudent['roll_no'],
         'name': localStudent['name'],
@@ -449,15 +477,19 @@ class _ScanScreenState extends State<ScanScreen> {
         'message': '⚠️ Using cached data due to server issue. $errorMessage',
         'timestamp': DateTime.now().toIso8601String(),
       };
-      
+
+      if (widget.role.startsWith('canteen_')) {
+        _scannedStudent = studentData;
+        await _recordCanteenVisit();
+      }
+
       _checkHostelAccessAndDisplay(studentData);
-      
     } else {
       print('🔍 DEBUG: ❌ No cached data available');
-      
+
       _handleStudentNotFound(rollNo, 'Student not found. $errorMessage');
     }
-    
+
     _safeSetState(() {
       _isScanning = false;
     });
@@ -472,7 +504,7 @@ class _ScanScreenState extends State<ScanScreen> {
     }
 
     // Check hostel access for security and canteen roles
-    if (widget.role.startsWith('security_') || widget.role.startsWith('canteen_')) {
+    if (widget.role.startsWith('security_')) {
       if (studentData['belongs_to_hostel'] != null) {
         if (studentData['belongs_to_hostel'] == true) {
           _showStudentScanResult(studentData);
@@ -496,23 +528,26 @@ class _ScanScreenState extends State<ScanScreen> {
   // ✅ NEW: Check hostel access and display
   void _checkHostelAccessAndDisplay(Map<String, dynamic> studentData) {
     // Check hostel access based on role
-    if (widget.role.startsWith('security_') || widget.role.startsWith('canteen_')) {
+    if (widget.role.startsWith('security_')) {
       if (studentData['hostel'] == widget.hostel) {
         studentData['belongs_to_hostel'] = true;
-        print('🔍 DEBUG: ✅ Student belongs to scanner hostel (${widget.hostel})');
+        print(
+            '🔍 DEBUG: ✅ Student belongs to scanner hostel (${widget.hostel})');
       } else {
         studentData['access_denied'] = true;
         studentData['message'] = 'Student belongs to different hostel';
         studentData['student_hostel'] = studentData['hostel'];
         studentData['user_hostel'] = widget.hostel;
-        print('🔍 DEBUG: ⚠️ Hostel mismatch: Student from ${studentData['hostel']}, Scanner from ${widget.hostel}');
+        print(
+            '🔍 DEBUG: ⚠️ Hostel mismatch: Student from ${studentData['hostel']}, Scanner from ${widget.hostel}');
       }
     } else if (widget.role == 'admin') {
       // Admin: Can access all
       studentData['belongs_to_hostel'] = true;
-      print('🔍 DEBUG: ✅ Admin access granted to student from ${studentData['hostel']}');
+      print(
+          '🔍 DEBUG: ✅ Admin access granted to student from ${studentData['hostel']}');
     }
-    
+
     _showStudentScanResult(studentData);
   }
 
@@ -525,15 +560,17 @@ class _ScanScreenState extends State<ScanScreen> {
         'error_message': reason,
         'timestamp': DateTime.now().toIso8601String(),
       };
-      
+
       // Add specific suggestions based on context
       if (reason.contains('offline')) {
-        _scannedStudent!['suggestion'] = 'Connect to internet and try again to fetch student data';
+        _scannedStudent!['suggestion'] =
+            'Connect to internet and try again to fetch student data';
         _scannedStudent!['offline_mode'] = true;
       } else {
-        _scannedStudent!['suggestion'] = 'Please check the roll number and try again';
+        _scannedStudent!['suggestion'] =
+            'Please check the roll number and try again';
       }
-      
+
       _showStudentInfo = true;
     });
   }
@@ -562,7 +599,9 @@ class _ScanScreenState extends State<ScanScreen> {
             width: 60,
             height: 60,
             decoration: BoxDecoration(
-              color: success ? Colors.green.withOpacity(0.1) : Colors.orange.withOpacity(0.1),
+              color: success
+                  ? Colors.green.withOpacity(0.1)
+                  : Colors.orange.withOpacity(0.1),
               shape: BoxShape.circle,
             ),
             child: Icon(
@@ -609,13 +648,14 @@ class _ScanScreenState extends State<ScanScreen> {
       final prefs = await SharedPreferences.getInstance();
       final String? token = prefs.getString('access_token');
       final String? deviceId = prefs.getString('device_id');
-      
+
       if (token == null) {
         throw Exception('No authentication token');
       }
-      
-      print('🔍 DEBUG: 🔄 Manual refresh - fetching student data from server...');
-      
+
+      print(
+          '🔍 DEBUG: 🔄 Manual refresh - fetching student data from server...');
+
       final response = await http.get(
         Uri.parse('$kBaseUrl/api/student/$rollNo/${widget.role}'),
         headers: {
@@ -627,7 +667,7 @@ class _ScanScreenState extends State<ScanScreen> {
       if (response.statusCode == 200) {
         final studentData = json.decode(response.body);
         print('🔍 DEBUG: ✅ Manual refresh successful: ${studentData['name']}');
-        
+
         // Update local cache with basic info
         if (studentData['name'] != null && studentData['hostel'] != null) {
           await _studentDB.saveStudent(
@@ -636,20 +676,20 @@ class _ScanScreenState extends State<ScanScreen> {
             hostel: studentData['hostel'],
           );
         }
-        
+
         // Add metadata
         studentData['data_source'] = 'server_manual_refresh';
         studentData['offline_mode'] = false;
         studentData['timestamp'] = DateTime.now().toIso8601String();
-        
+
         _processAndDisplayStudentData(studentData);
-        
       } else {
         // Keep existing data but show error
         if (_scannedStudent != null) {
           _safeSetState(() {
             _scannedStudent!['refresh_error'] = true;
-            _scannedStudent!['refresh_message'] = 'Failed to refresh: ${response.statusCode}';
+            _scannedStudent!['refresh_message'] =
+                'Failed to refresh: ${response.statusCode}';
           });
         }
       }
@@ -663,7 +703,7 @@ class _ScanScreenState extends State<ScanScreen> {
       }
     }
   }
-  
+
   Widget _buildStudentNotFoundView(bool isDark) {
     return SingleChildScrollView(
       padding: EdgeInsets.all(24.0),
@@ -682,13 +722,18 @@ class _ScanScreenState extends State<ScanScreen> {
           SizedBox(height: 24),
           Text(
             'Student Not Found',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.orange[800]),
+            style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.orange[800]),
           ),
           SizedBox(height: 16),
           Container(
             padding: EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: isDark ? Colors.orange[900]!.withOpacity(0.3) : Colors.orange[50]!,
+              color: isDark
+                  ? Colors.orange[900]!.withOpacity(0.3)
+                  : Colors.orange[50]!,
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: Colors.orange[200]!),
             ),
@@ -716,14 +761,15 @@ class _ScanScreenState extends State<ScanScreen> {
                 ),
                 SizedBox(height: 12),
                 Text(
-                  _scannedStudent!['error_message'] ?? 'Please check the QR code and try again',
+                  _scannedStudent!['error_message'] ??
+                      'Please check the QR code and try again',
                   style: TextStyle(
                     fontSize: 14,
                     color: Colors.orange[700],
                   ),
                   textAlign: TextAlign.center,
                 ),
-                
+
                 // Show offline sync suggestion
                 if (_scannedStudent!['offline_mode'] == true)
                   Container(
@@ -757,7 +803,8 @@ class _ScanScreenState extends State<ScanScreen> {
                         ElevatedButton.icon(
                           onPressed: () async {
                             // Navigate to sync screen or trigger sync
-                            final success = await _syncService.checkAndSyncStudentData(forceSync: true);
+                            final success = await _syncService
+                                .checkAndSyncStudentData(forceSync: true);
                             if (success) {
                               _resetScanAndGoBack();
                             }
@@ -819,12 +866,12 @@ class _ScanScreenState extends State<ScanScreen> {
       ),
     );
   }
-  
+
   Widget _buildStudentInfoView(bool isDark) {
     if (_scannedStudent!['not_found'] == true) {
       return _buildStudentNotFoundView(isDark);
     }
-    
+
     bool isAccessDenied = _scannedStudent!['access_denied'] == true;
 
     if (isAccessDenied) {
@@ -833,7 +880,11 @@ class _ScanScreenState extends State<ScanScreen> {
 
     String roleType = widget.role.split('_')[0];
 
-    if((roleType == 'canteen' || roleType == 'security') && 
+    if (roleType == 'canteen') {
+      return _buildSimpleVerificationView(isDark);
+    }
+
+    if (roleType == 'security' &&
         _scannedStudent!['belongs_to_hostel'] == true) {
       return _buildSimpleVerificationView(isDark);
     }
@@ -861,7 +912,7 @@ class _ScanScreenState extends State<ScanScreen> {
                         Text(
                           _scannedStudent!['name']?.toString() ?? 'Unknown',
                           style: TextStyle(
-                            fontSize: 20, 
+                            fontSize: 20,
                             fontWeight: FontWeight.bold,
                             color: Theme.of(context).colorScheme.onSurface,
                           ),
@@ -870,21 +921,24 @@ class _ScanScreenState extends State<ScanScreen> {
                         Text(
                           'Roll No: ${_scannedStudent!['roll_no']?.toString() ?? 'N/A'}',
                           style: TextStyle(
-                            fontSize: 16, 
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            fontSize: 16,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                         ),
                         Text(
                           'Hostel: ${_scannedStudent!['hostel']?.toString() ?? 'N/A'}',
                           style: TextStyle(
-                            fontSize: 14, 
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            fontSize: 14,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                         ),
                         if (_scannedStudent!['from_local_db'] == true) ...[
                           SizedBox(height: 4),
                           Container(
-                            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            padding: EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 2),
                             decoration: BoxDecoration(
                               color: Colors.green[50],
                               borderRadius: BorderRadius.circular(4),
@@ -908,15 +962,14 @@ class _ScanScreenState extends State<ScanScreen> {
           ),
           SizedBox(height: 20),
 
-          if (widget.role.startsWith('security'))
-            _buildSecurityActions(isDark),
+          if (widget.role.startsWith('security')) _buildSecurityActions(isDark),
 
           _buildBasicInfoCard(isDark),
 
           // ✅ UPDATED: Only show refresh button when using limited cached data while online
-          if ((_scannedStudent!['data_source'] == 'local_cache_fallback' || 
-               (_scannedStudent!['limited_data'] == true && 
-                _scannedStudent!['offline_mode'] != true)) &&
+          if ((_scannedStudent!['data_source'] == 'local_cache_fallback' ||
+                  (_scannedStudent!['limited_data'] == true &&
+                      _scannedStudent!['offline_mode'] != true)) &&
               _scannedStudent!['refresh_error'] != true) ...[
             SizedBox(height: 16),
             Container(
@@ -991,7 +1044,7 @@ class _ScanScreenState extends State<ScanScreen> {
                 label: Text('Back'),
               ),
             ],
-          ),         
+          ),
         ],
       ),
     );
@@ -1013,7 +1066,7 @@ class _ScanScreenState extends State<ScanScreen> {
       padding: EdgeInsets.all(24.0),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
-        children: [        
+        children: [
           Container(
             width: 120,
             height: 120,
@@ -1026,13 +1079,18 @@ class _ScanScreenState extends State<ScanScreen> {
           SizedBox(height: 24),
           Text(
             'Student Verified',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green[800]),
+            style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.green[800]),
           ),
           SizedBox(height: 16),
           Container(
             padding: EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: isDark ? Colors.green[900]!.withOpacity(0.3) : Colors.green[50],
+              color: isDark
+                  ? Colors.green[900]!.withOpacity(0.3)
+                  : Colors.green[50],
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: Colors.green[200]!),
             ),
@@ -1101,12 +1159,10 @@ class _ScanScreenState extends State<ScanScreen> {
               ],
             ),
           ),
-
           if (widget.role.startsWith('security')) ...[
             SizedBox(height: 20),
             _buildSecurityActions(isDark),
           ],
-
           SizedBox(height: 20),
           ElevatedButton.icon(
             onPressed: () {
@@ -1119,7 +1175,7 @@ class _ScanScreenState extends State<ScanScreen> {
       ),
     );
   }
-  
+
   Widget _buildAccessDeniedView(bool isDark) {
     return SingleChildScrollView(
       padding: EdgeInsets.all(24.0),
@@ -1138,13 +1194,17 @@ class _ScanScreenState extends State<ScanScreen> {
           SizedBox(height: 24),
           Text(
             'Access Denied',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.red[800]),
+            style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.red[800]),
           ),
           SizedBox(height: 16),
           Container(
             padding: EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: isDark ? Colors.red[900]!.withOpacity(0.3) : Colors.red[50],
+              color:
+                  isDark ? Colors.red[900]!.withOpacity(0.3) : Colors.red[50],
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: Colors.red[200]!),
             ),
@@ -1154,7 +1214,10 @@ class _ScanScreenState extends State<ScanScreen> {
                 SizedBox(height: 12),
                 Text(
                   _scannedStudent!['message'] ?? 'Access denied',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Colors.red[800]),
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.red[800]),
                   textAlign: TextAlign.center,
                 ),
                 SizedBox(height: 8),
@@ -1223,7 +1286,7 @@ class _ScanScreenState extends State<ScanScreen> {
             Text(
               'Security Actions',
               style: TextStyle(
-                fontSize: 18, 
+                fontSize: 18,
                 fontWeight: FontWeight.bold,
                 color: Theme.of(context).colorScheme.onSurface,
               ),
@@ -1235,7 +1298,8 @@ class _ScanScreenState extends State<ScanScreen> {
                   child: ElevatedButton.icon(
                     onPressed: () => _performSecurityAction('out'),
                     icon: Icon(Icons.exit_to_app, color: Colors.white),
-                    label: Text('Check Out', style: TextStyle(color: Colors.white)),
+                    label: Text('Check Out',
+                        style: TextStyle(color: Colors.white)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.orange,
                       padding: EdgeInsets.symmetric(vertical: 15),
@@ -1247,7 +1311,8 @@ class _ScanScreenState extends State<ScanScreen> {
                   child: ElevatedButton.icon(
                     onPressed: () => _performSecurityAction('in'),
                     icon: Icon(Icons.login, color: Colors.white),
-                    label: Text('Check In', style: TextStyle(color: Colors.white)),
+                    label:
+                        Text('Check In', style: TextStyle(color: Colors.white)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green,
                       padding: EdgeInsets.symmetric(vertical: 15),
@@ -1261,7 +1326,7 @@ class _ScanScreenState extends State<ScanScreen> {
               builder: (context, snapshot) {
                 final isOnline = snapshot.data ?? true;
                 if (isOnline) return SizedBox.shrink();
-                
+
                 return Padding(
                   padding: EdgeInsets.only(top: 12),
                   child: Row(
@@ -1299,7 +1364,7 @@ class _ScanScreenState extends State<ScanScreen> {
             Text(
               'Student Information',
               style: TextStyle(
-                fontSize: 18, 
+                fontSize: 18,
                 fontWeight: FontWeight.bold,
                 color: Theme.of(context).colorScheme.onSurface,
               ),
@@ -1308,7 +1373,7 @@ class _ScanScreenState extends State<ScanScreen> {
             _buildInfoRow('Room No', _scannedStudent!['room_no']?.toString()),
             _buildInfoRow('Course', _scannedStudent!['course']?.toString()),
             _buildInfoRow('Branch', _scannedStudent!['branch']?.toString()),
-            if (_scannedStudent!['limited_data'] == true && 
+            if (_scannedStudent!['limited_data'] == true &&
                 _scannedStudent!['offline_mode'] == true) ...[
               SizedBox(height: 12),
               Container(
@@ -1342,13 +1407,13 @@ class _ScanScreenState extends State<ScanScreen> {
 
   Widget _buildInfoRow(String label, String? value) {
     if (value == null || value.isEmpty) return SizedBox.shrink();
-    
+
     return Padding(
       padding: EdgeInsets.symmetric(vertical: 8.0),
       child: Row(
         children: [
           Text(
-            '$label:', 
+            '$label:',
             style: TextStyle(
               fontWeight: FontWeight.bold,
               color: Theme.of(context).colorScheme.onSurface,
@@ -1368,6 +1433,106 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
+  Future<void> _recordCanteenVisit() async {
+    if (!widget.role.startsWith('canteen_')) {
+      return;
+    }
+
+    final eventId = const Uuid().v4();
+    final rollNo = _scannedStudent?['roll_no']?.toString();
+
+    if (rollNo == null || rollNo.isEmpty) {
+      print('🔍 DEBUG: Cannot record canteen visit - no roll number');
+      return;
+    }
+
+    final timestamp = DateTime.now();
+    final localDB = LocalDBHelper();
+
+    try {
+      final isOnline = await _networkService.isConnected();
+
+      // 📵 OFFLINE → save locally for later sync
+      if (!isOnline) {
+        await localDB.saveCanteenVisit(
+          rollNo: rollNo,
+          role: widget.role,
+          timestamp: timestamp,
+          eventId: eventId,
+        );
+
+        print(
+          '🔍 DEBUG: 📴 Canteen visit saved offline - '
+          'Roll: $rollNo, Event ID: $eventId',
+        );
+
+        return;
+      }
+
+      // 🌐 ONLINE → send directly to backend
+      final prefs = await SharedPreferences.getInstance();
+      final String? token = prefs.getString('access_token');
+      final String? deviceId = prefs.getString('device_id');
+
+      if (token == null) {
+        throw Exception('No authentication token available');
+      }
+
+      final response = await http
+          .post(
+            Uri.parse('$kBaseUrl/api/student/scan/canteen/${widget.role}'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+              'Device-Id': deviceId ?? '',
+            },
+            body: json.encode({
+              'roll_no': rollNo,
+              'event_id': eventId,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      print(
+        '🔍 DEBUG: Canteen visit response: '
+        '${response.statusCode} ${response.body}',
+      );
+
+      if (response.statusCode == 200) {
+        print(
+          '🔍 DEBUG: ✅ Canteen visit recorded successfully '
+          '- Roll: $rollNo',
+        );
+        return;
+      }
+
+      // Server rejected/failed → preserve locally
+      await localDB.saveCanteenVisit(
+        rollNo: rollNo,
+        role: widget.role,
+        timestamp: timestamp,
+        eventId: eventId,
+        syncError: 'Server returned ${response.statusCode}: ${response.body}',
+      );
+
+      print(
+        '🔍 DEBUG: ⚠️ Canteen visit saved locally after server failure',
+      );
+    } catch (e) {
+      // 🌐 Network/API error → save locally
+      await localDB.saveCanteenVisit(
+        rollNo: rollNo,
+        role: widget.role,
+        timestamp: timestamp,
+        eventId: eventId,
+        syncError: e.toString(),
+      );
+
+      print(
+        '🔍 DEBUG: ⚠️ Canteen visit saved locally due to error: $e',
+      );
+    }
+  }
 
   Future<void> _performSecurityAction(String action) async {
     final eventId = const Uuid().v4();
@@ -1384,11 +1549,11 @@ class _ScanScreenState extends State<ScanScreen> {
           eventId: eventId,
         );
         if (!mounted) return;
-        _showSecurityActionResult(  // ✅ FIXED: Changed to _showSecurityActionResult
-          true, 
-          'Saved Offline', 
-          '${action == 'out' ? 'Check Out' : 'Check In'} saved locally.\nWill sync automatically when online.\nTime: ${_formatDateTimeForDisplay(DateTime.now())}'
-        );
+        _showSecurityActionResult(
+            // ✅ FIXED: Changed to _showSecurityActionResult
+            true,
+            'Saved Offline',
+            '${action == 'out' ? 'Check Out' : 'Check In'} saved locally.\nWill sync automatically when online.\nTime: ${_formatDateTimeForDisplay(DateTime.now())}');
         return;
       }
 
@@ -1413,13 +1578,13 @@ class _ScanScreenState extends State<ScanScreen> {
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
         if (!mounted) return;
-        _showSecurityActionResult(  // ✅ FIXED: Changed to _showSecurityActionResult
-          true, 
-          'Success', 
-          '${action == 'out' ? 'Check out' : 'Check in'} successful!\n'
-          'Time: ${_formatDateTimeForDisplay(result['time'])}\n'
-          'Time spent: ${result['time_spent_minutes'] ?? 'N/A'} minutes'
-        );
+        _showSecurityActionResult(
+            // ✅ FIXED: Changed to _showSecurityActionResult
+            true,
+            'Success',
+            '${action == 'out' ? 'Check out' : 'Check in'} successful!\n'
+                'Time: ${_formatDateTimeForDisplay(result['time'])}\n'
+                'Time spent: ${result['time_spent_minutes'] ?? 'N/A'} minutes');
       } else {
         final errorData = json.decode(response.body);
         String errorMessage = errorData['message'] ?? 'Action failed';
@@ -1440,11 +1605,11 @@ class _ScanScreenState extends State<ScanScreen> {
           eventId: eventId,
         );
         if (!mounted) return;
-        _showSecurityActionResult(  // ✅ FIXED: Changed to _showSecurityActionResult
-          true, 
-          'Saved Offline', 
-          'Network issue. Action saved locally.\nWill sync when online.\nError: $errorMessage'
-        );
+        _showSecurityActionResult(
+            // ✅ FIXED: Changed to _showSecurityActionResult
+            true,
+            'Saved Offline',
+            'Network issue. Action saved locally.\nWill sync when online.\nError: $errorMessage');
       }
     } catch (e) {
       final localDB = LocalDBHelper();
@@ -1457,21 +1622,26 @@ class _ScanScreenState extends State<ScanScreen> {
         syncError: e.toString(),
       );
       if (!mounted) return;
-      _showSecurityActionResult(  // ✅ FIXED: Changed to _showSecurityActionResult
-        true, 
-        'Saved Offline', 
-        'Action saved locally due to error.\nWill sync when online.\nError: $e'
-      );
+      _showSecurityActionResult(
+          // ✅ FIXED: Changed to _showSecurityActionResult
+          true,
+          'Saved Offline',
+          'Action saved locally due to error.\nWill sync when online.\nError: $e');
     }
   }
 
   Color _getRoleColor(String role) {
     switch (role) {
-      case 'admin': return Colors.purple;
-      case 'super': return Colors.blue;
-      case 'canteen': return Colors.green;
-      case 'security': return Colors.orange;
-      default: return Colors.blue;
+      case 'admin':
+        return Colors.purple;
+      case 'super':
+        return Colors.blue;
+      case 'canteen':
+        return Colors.green;
+      case 'security':
+        return Colors.orange;
+      default:
+        return Colors.blue;
     }
   }
 
@@ -1480,15 +1650,14 @@ class _ScanScreenState extends State<ScanScreen> {
 
     try {
       DateTime? parsedDate;
-      
+
       if (dateTime is String) {
         parsedDate = DateTime.parse(dateTime).toLocal();
-      }
-      else if (dateTime is Map<String, dynamic> && dateTime.containsKey('\$date')) {
+      } else if (dateTime is Map<String, dynamic> &&
+          dateTime.containsKey('\$date')) {
         String dateString = dateTime['\$date'];
         parsedDate = DateTime.parse(dateString).toLocal();
-      }
-      else if (dateTime is DateTime) {
+      } else if (dateTime is DateTime) {
         parsedDate = dateTime.toLocal();
       }
 

@@ -3,6 +3,8 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
+const String kBaseUrl = "https://cn-project-app-dev.onrender.com";
+
 class RealtimeAlertsScreen extends StatefulWidget {
   @override
   _RealtimeAlertsScreenState createState() => _RealtimeAlertsScreenState();
@@ -112,15 +114,15 @@ class _RealtimeAlertsScreenState extends State<RealtimeAlertsScreen> {
           ),
           child: Icon(icon, color: color),
         ),
-        title: Text(alert['message'], style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(alert['message'],
+            style: TextStyle(fontWeight: FontWeight.bold)),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (alert['details'] != null) 
-              Text('${alert['details']}'),
+            if (alert['details'] != null) Text('${alert['details']}'),
             SizedBox(height: 4),
-            Text(_formatTimestamp(alert['timestamp']), 
-                 style: TextStyle(fontSize: 12, color: Colors.grey)),
+            Text(_formatTimestamp(alert['timestamp']),
+                style: TextStyle(fontSize: 12, color: Colors.grey)),
           ],
         ),
         trailing: Icon(Icons.arrow_forward_ios, size: 16),
@@ -131,18 +133,25 @@ class _RealtimeAlertsScreenState extends State<RealtimeAlertsScreen> {
 
   Color _getAlertColor(String priority) {
     switch (priority) {
-      case 'high': return Colors.red;
-      case 'medium': return Colors.orange;
-      default: return Colors.blue;
+      case 'high':
+        return Colors.red;
+      case 'medium':
+        return Colors.orange;
+      default:
+        return Colors.blue;
     }
   }
 
   IconData _getAlertIcon(String type) {
     switch (type) {
-      case 'unauthorized_visit': return Icons.warning;
-      case 'high_activity': return Icons.trending_up;
-      case 'hostel_pattern': return Icons.group;
-      default: return Icons.notifications;
+      case 'unauthorized_visit':
+        return Icons.warning;
+      case 'high_activity':
+        return Icons.trending_up;
+      case 'hostel_pattern':
+        return Icons.group;
+      default:
+        return Icons.notifications;
     }
   }
 
@@ -155,10 +164,10 @@ class _RealtimeAlertsScreenState extends State<RealtimeAlertsScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(alert['message'], style: TextStyle(fontWeight: FontWeight.bold)),
+            Text(alert['message'],
+                style: TextStyle(fontWeight: FontWeight.bold)),
             SizedBox(height: 16),
-            if (alert['details'] != null)
-              Text('Details: ${alert['details']}'),
+            if (alert['details'] != null) Text('Details: ${alert['details']}'),
             SizedBox(height: 8),
             Text('Priority: ${alert['priority']}'),
             Text('Time: ${_formatTimestamp(alert['timestamp'])}'),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'dart:async'; // handling async tasks(don’t finish instantly) like API calls,
@@ -24,10 +25,24 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
   bool _isLoading = true;
   int _selectedYear = DateTime.now().year;
   int _selectedMonth = DateTime.now().month;
-  List<int> _years = [2023, 2024, 2025];
+
+  List<int> _years = List.generate(
+    DateTime.now().year - 2023 + 1,
+    (index) => 2023 + index,
+  ).toSet().toList();
   List<String> _months = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December'
   ];
 
   @override
@@ -40,10 +55,10 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
     setState(() {
       _isLoading = true;
     });
-    
+
     await _loadAnalyticsData();
     await _loadLateArrivalsData();
-    
+
     setState(() {
       _isLoading = false;
     });
@@ -57,7 +72,7 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
       print('🔍 Loading late arrivals data...');
 
       String url = '$kBaseUrl/api/analytics/late-arrivals';
-    
+
       // Add hostel filter for super users
       if (widget.userRole.startsWith('super_')) {
         url += '?hostel=${widget.userHostel}';
@@ -69,13 +84,13 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
           'Authorization': 'Bearer $token',
         },
       );
-      
+
       print('📡 Late Arrivals Response Status: ${response.statusCode}');
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         print('✅ Late Arrivals Data Parsed Successfully');
-        
+
         // Process ALL late arrivals data with proper date filtering
         _processAllLateArrivalsWithFilter(data);
       } else {
@@ -90,7 +105,7 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
 
   void _processAllLateArrivalsWithFilter(Map<String, dynamic> data) {
     final weeklyLateArrivals = data['weekly_late_arrivals'] ?? [];
-    
+
     if (weeklyLateArrivals.isEmpty) {
       print('📭 No late arrivals data found');
       _setEmptyLateArrivalsData();
@@ -108,20 +123,22 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
         String name = arrival['_id']['name'] ?? 'Unknown';
         String hostel = arrival['_id']['hostel'] ?? 'Unknown';
         int lateCount = arrival['late_count'] ?? 1;
-        double totalTimeExceeded = (arrival['total_time_exceeded'] ?? 0.0).toDouble();
-        
+        double totalTimeExceeded =
+            (arrival['total_time_exceeded'] ?? 0.0).toDouble();
+
         // Extract date from last_occurrence and check if it matches selected month/year
         DateTime? arrivalDate = _parseArrivalDate(arrival['last_occurrence']);
-        
+
         if (arrivalDate != null) {
-          bool matchesSelection = arrivalDate.year == _selectedYear && 
-                                 arrivalDate.month == _selectedMonth;
-          
-          print('📅 Checking: $name - Date: $arrivalDate - Matches: $matchesSelection');
-          
+          bool matchesSelection = arrivalDate.year == _selectedYear &&
+              arrivalDate.month == _selectedMonth;
+
+          print(
+              '📅 Checking: $name - Date: $arrivalDate - Matches: $matchesSelection');
+
           if (matchesSelection) {
             foundRecords++;
-            
+
             // Count total occurrences (sum of all late_count values)
             totalOccurrences += lateCount;
 
@@ -136,13 +153,15 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                 'occurrence_count': lateCount,
               };
             } else {
-              studentMap[rollNo]!['total_time_exceeded'] = 
-                  (studentMap[rollNo]!['total_time_exceeded'] as double) + totalTimeExceeded;
-              studentMap[rollNo]!['occurrence_count'] = 
+              studentMap[rollNo]!['total_time_exceeded'] =
+                  (studentMap[rollNo]!['total_time_exceeded'] as double) +
+                      totalTimeExceeded;
+              studentMap[rollNo]!['occurrence_count'] =
                   (studentMap[rollNo]!['occurrence_count'] as int) + lateCount;
             }
 
-            print('✅ INCLUDED: $name, Roll: $rollNo, Late Count: $lateCount, Total Time: $totalTimeExceeded min');
+            print(
+                '✅ INCLUDED: $name, Roll: $rollNo, Late Count: $lateCount, Total Time: $totalTimeExceeded min');
           }
         }
       } catch (e) {
@@ -153,8 +172,10 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
     print('🎯 Found $foundRecords records for $_selectedMonth/$_selectedYear');
 
     // Convert map to list and sort by time exceeded (descending)
-    List<Map<String, dynamic>> filteredLateStudents = studentMap.values.toList();
-    filteredLateStudents.sort((a, b) => (b['total_time_exceeded'] as double).compareTo(a['total_time_exceeded'] as double));
+    List<Map<String, dynamic>> filteredLateStudents =
+        studentMap.values.toList();
+    filteredLateStudents.sort((a, b) => (b['total_time_exceeded'] as double)
+        .compareTo(a['total_time_exceeded'] as double));
 
     // Count unique students
     int uniqueStudentsCount = studentMap.length;
@@ -172,33 +193,41 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
       };
     });
 
-    print('✅ Processed $uniqueStudentsCount unique students with $totalOccurrences total occurrences for $_selectedMonth/$_selectedYear');
+    print(
+        '✅ Processed $uniqueStudentsCount unique students with $totalOccurrences total occurrences for $_selectedMonth/$_selectedYear');
   }
 
   DateTime? _parseArrivalDate(dynamic dateValue) {
     if (dateValue == null) return null;
-    
+
     try {
       String dateString;
-      
-      // Handle MongoDB date format: {"$date": "2025-09-26T00:00:00Z"}
-      if (dateValue is Map<String, dynamic> && dateValue.containsKey('\$date')) {
-        dateString = dateValue['\$date'];
-      } 
-      // Handle regular string dates
+
+      // Handle MongoDB date format:
+      // {"$date": "2026-08-15T08:55:18Z"}
+      if (dateValue is Map<String, dynamic> &&
+          dateValue.containsKey('\$date')) {
+        dateString = dateValue['\$date'].toString();
+      }
+      // Handle normal string dates
       else if (dateValue is String) {
         dateString = dateValue;
       } else {
         return null;
       }
-      
-      // Parse the date and preserve timezone info
-      DateTime parsedDate = DateTime.parse(dateString);
-      
-      // ✅ FIX: Convert to local time for display (this will show IST if device is in IST)
-      // OR keep as UTC but format with timezone indicator
-      return parsedDate.toLocal(); // This converts UTC to device local time
-      
+
+      DateTime parsedDate;
+
+      try {
+        // Handles ISO-8601 dates
+        parsedDate = DateTime.parse(dateString);
+      } catch (_) {
+        // Handles HTTP/RFC-1123 dates such as:
+        // Sat, 15 Aug 2026 08:55:18 GMT
+        parsedDate = HttpDate.parse(dateString);
+      }
+
+      return parsedDate.toLocal();
     } catch (e) {
       print('❌ Date parsing error: $e');
       return null;
@@ -214,7 +243,10 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
     setState(() {
       _lateArrivalsData = {
         'student_details': [],
-        'summary': {'total_students_with_late_arrivals': 0, 'total_late_occurrences': 0},
+        'summary': {
+          'total_students_with_late_arrivals': 0,
+          'total_late_occurrences': 0
+        },
         'has_data': false,
         'month_year': '$_selectedMonth/$_selectedYear',
         'records_found': 0
@@ -227,7 +259,8 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
       SharedPreferences prefs = await SharedPreferences.getInstance();
       String? token = prefs.getString('access_token');
 
-      String url = '$kBaseUrl/api/analytics/unauthorized-visits-monthly?year=$_selectedYear&month=$_selectedMonth';
+      String url =
+          '$kBaseUrl/api/analytics/unauthorized-visits-monthly?year=$_selectedYear&month=$_selectedMonth';
 
       // Add hostel filter for super users
       if (widget.userRole.startsWith('super_')) {
@@ -242,6 +275,7 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
       );
 
       if (response.statusCode == 200) {
+        print('📊 MONTHLY UNAUTHORIZED RESPONSE: ${response.body}');
         setState(() {
           _analyticsData = json.decode(response.body);
         });
@@ -264,7 +298,7 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
         'by_student_hostel': [],
         'by_canteen_hostel': [],
         'summary': {
-        'month': _selectedMonth,
+          'month': _selectedMonth,
           'year': _selectedYear,
           'total_unauthorized_visits': 0,
           'unique_students_involved': 0
@@ -276,7 +310,7 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
   @override
   Widget build(BuildContext context) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    
+
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.background,
       appBar: AppBar(
@@ -287,7 +321,8 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
         centerTitle: true,
         actions: [
           IconButton(
-            icon: Icon(Icons.refresh, color: Theme.of(context).colorScheme.onPrimary),
+            icon: Icon(Icons.refresh,
+                color: Theme.of(context).colorScheme.onPrimary),
             onPressed: _loadAllData,
             tooltip: 'Refresh Data',
           ),
@@ -310,7 +345,8 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
               shape: BoxShape.circle,
             ),
             child: CircularProgressIndicator(
-              valueColor: AlwaysStoppedAnimation<Color>(Theme.of(context).colorScheme.primary),
+              valueColor: AlwaysStoppedAnimation<Color>(
+                  Theme.of(context).colorScheme.primary),
               strokeWidth: 3,
             ),
           ),
@@ -318,10 +354,9 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
           Text(
             'Loading Analytics Dashboard',
             style: TextStyle(
-              fontSize: 16, 
-              color: Theme.of(context).colorScheme.onSurfaceVariant, 
-              fontWeight: FontWeight.w500
-            ),
+                fontSize: 16,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w500),
           ),
         ],
       ),
@@ -329,10 +364,10 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
   }
 
   Widget _buildAnalyticsDashboard(bool isDark) {
-    final hasUnauthorizedData = _analyticsData != null && 
-        (_analyticsData!['by_student_hostel']?.isNotEmpty == true || 
-         _analyticsData!['by_canteen_hostel']?.isNotEmpty == true);
-    
+    final hasUnauthorizedData = _analyticsData != null &&
+        (_analyticsData!['by_student_hostel']?.isNotEmpty == true ||
+            _analyticsData!['by_canteen_hostel']?.isNotEmpty == true);
+
     final hasLateArrivalsData = _lateArrivalsData?['has_data'] == true;
 
     return SingleChildScrollView(
@@ -348,7 +383,7 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
 
           // Late Arrivals Section - Always show but with proper empty state
           _buildLateArrivalsSection(isDark),
-          
+
           SizedBox(height: 20),
         ],
       ),
@@ -357,9 +392,9 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
 
   Widget _buildDashboardHeader(bool isDark) {
     final hasLateArrivalsData = _lateArrivalsData?['has_data'] == true;
-    final hasUnauthorizedData = _analyticsData != null && 
-        (_analyticsData!['by_student_hostel']?.isNotEmpty == true || 
-         _analyticsData!['by_canteen_hostel']?.isNotEmpty == true);
+    final hasUnauthorizedData = _analyticsData != null &&
+        (_analyticsData!['by_student_hostel']?.isNotEmpty == true ||
+            _analyticsData!['by_canteen_hostel']?.isNotEmpty == true);
 
     return Card(
       elevation: 2,
@@ -371,7 +406,10 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: isDark
-                ? [Colors.purple[900]!.withOpacity(0.3), Colors.blue[900]!.withOpacity(0.3)]
+                ? [
+                    Colors.purple[900]!.withOpacity(0.3),
+                    Colors.blue[900]!.withOpacity(0.3)
+                  ]
                 : [Colors.purple[50]!, Colors.blue[50]!],
           ),
           borderRadius: BorderRadius.circular(16),
@@ -385,10 +423,14 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                   Container(
                     padding: EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .primary
+                          .withOpacity(0.1),
                       shape: BoxShape.circle,
                     ),
-                    child: Icon(Icons.analytics, color: Theme.of(context).colorScheme.primary, size: 24),
+                    child: Icon(Icons.analytics,
+                        color: Theme.of(context).colorScheme.primary, size: 24),
                   ),
                   SizedBox(width: 12),
                   Expanded(
@@ -398,13 +440,15 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                         Text(
                           'Monthly Analytics',
                           style: TextStyle(
-                            fontSize: 18, 
-                            fontWeight: FontWeight.bold, 
-                            color: isDark ? Colors.purple[100] : Colors.purple[800]
-                          ),
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: isDark
+                                  ? Colors.purple[100]
+                                  : Colors.purple[800]),
                         ),
                         // REPLACE the existing Text widget with _buildAnalyticsTime()
-                        _buildAnalyticsTime(hasUnauthorizedData, hasLateArrivalsData, isDark),
+                        _buildAnalyticsTime(
+                            hasUnauthorizedData, hasLateArrivalsData, isDark),
                       ],
                     ),
                   ),
@@ -421,7 +465,8 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
     );
   }
 
-  Widget _buildAnalyticsTime(bool hasUnauthorizedData, bool hasLateArrivalsData, bool isDark) {
+  Widget _buildAnalyticsTime(
+      bool hasUnauthorizedData, bool hasLateArrivalsData, bool isDark) {
     return StreamBuilder(
       stream: Stream.periodic(Duration(seconds: 1)),
       builder: (context, snapshot) {
@@ -431,11 +476,14 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
           children: [
             Text(
               '${_months[_selectedMonth - 1]} $_selectedYear • ${DateFormat('HH:mm:ss').format(now)} IST',
-              style: TextStyle(fontSize: 14, color: isDark ? Colors.purple[300] : Colors.purple[600]),
+              style: TextStyle(
+                  fontSize: 14,
+                  color: isDark ? Colors.purple[300] : Colors.purple[600]),
             ),
             SizedBox(height: 4),
             // Show data availability status
-            _buildDataAvailabilityStatus(hasUnauthorizedData, hasLateArrivalsData, isDark),
+            _buildDataAvailabilityStatus(
+                hasUnauthorizedData, hasLateArrivalsData, isDark),
           ],
         );
       },
@@ -452,7 +500,9 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
             Container(
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color: isDark ? Colors.green[900]!.withOpacity(0.3) : Colors.green[50],
+                color: isDark
+                    ? Colors.green[900]!.withOpacity(0.3)
+                    : Colors.green[50],
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: Colors.green[200]!),
               ),
@@ -479,7 +529,8 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
     );
   }
 
-  Widget _buildDataAvailabilityStatus(bool hasUnauthorizedData, bool hasLateArrivalsData, bool isDark) {
+  Widget _buildDataAvailabilityStatus(
+      bool hasUnauthorizedData, bool hasLateArrivalsData, bool isDark) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -498,7 +549,9 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
               'Canteen Visits: ${hasUnauthorizedData ? 'Data available' : 'No data'}',
               style: TextStyle(
                 fontSize: 12,
-                color: hasUnauthorizedData ? Colors.green[700] : Theme.of(context).colorScheme.onSurfaceVariant,
+                color: hasUnauthorizedData
+                    ? Colors.green[700]
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
           ],
@@ -519,7 +572,9 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
               'Late Arrivals: ${hasLateArrivalsData ? 'Data available' : 'No data'}',
               style: TextStyle(
                 fontSize: 12,
-                color: hasLateArrivalsData ? Colors.orange[700] : Theme.of(context).colorScheme.onSurfaceVariant,
+                color: hasLateArrivalsData
+                    ? Colors.orange[700]
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
           ],
@@ -548,14 +603,11 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Year', 
-                  style: TextStyle(
-                    fontSize: 12, 
-                    fontWeight: FontWeight.w500, 
-                    color: Theme.of(context).colorScheme.onSurfaceVariant
-                  )
-                ),
+                Text('Year',
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant)),
                 SizedBox(height: 6),
                 Container(
                   decoration: BoxDecoration(
@@ -565,16 +617,18 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                   ),
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<int>(
-                      value: _selectedYear,
+                      value:
+                          _years.contains(_selectedYear) ? _selectedYear : null,
                       isExpanded: true,
-                      icon: Icon(Icons.arrow_drop_down, color: Theme.of(context).colorScheme.primary),
-                      items: _years.map((year) {
-                        return DropdownMenuItem(
+                      icon: Icon(Icons.arrow_drop_down,
+                          color: Theme.of(context).colorScheme.primary),
+                      items: _years.map<DropdownMenuItem<int>>((year) {
+                        return DropdownMenuItem<int>(
                           value: year,
                           child: Padding(
                             padding: EdgeInsets.symmetric(horizontal: 12),
                             child: Text(
-                              year.toString(), 
+                              year.toString(),
                               style: TextStyle(
                                 fontSize: 14,
                                 color: Theme.of(context).colorScheme.onSurface,
@@ -600,14 +654,11 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Month', 
-                  style: TextStyle(
-                    fontSize: 12, 
-                    fontWeight: FontWeight.w500, 
-                    color: Theme.of(context).colorScheme.onSurfaceVariant
-                  )
-                ),
+                Text('Month',
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant)),
                 SizedBox(height: 6),
                 Container(
                   decoration: BoxDecoration(
@@ -619,14 +670,15 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                     child: DropdownButton<int>(
                       value: _selectedMonth,
                       isExpanded: true,
-                      icon: Icon(Icons.arrow_drop_down, color: Theme.of(context).colorScheme.primary),
+                      icon: Icon(Icons.arrow_drop_down,
+                          color: Theme.of(context).colorScheme.primary),
                       items: List.generate(12, (index) {
                         return DropdownMenuItem(
                           value: index + 1,
                           child: Padding(
                             padding: EdgeInsets.symmetric(horizontal: 12),
                             child: Text(
-                              _months[index], 
+                              _months[index],
                               style: TextStyle(
                                 fontSize: 14,
                                 color: Theme.of(context).colorScheme.onSurface,
@@ -684,7 +736,8 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
               // Summary Cards
               Row(
                 children: [
-                  Expanded(child: _buildMetricCard(
+                  Expanded(
+                      child: _buildMetricCard(
                     value: '$totalVisits',
                     label: 'Total Visits',
                     icon: Icons.fastfood,
@@ -692,7 +745,8 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                     isDark: isDark,
                   )),
                   SizedBox(width: 12),
-                  Expanded(child: _buildMetricCard(
+                  Expanded(
+                      child: _buildMetricCard(
                     value: '$uniqueStudents',
                     label: 'Students Involved',
                     icon: Icons.people_alt,
@@ -704,19 +758,20 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
               SizedBox(height: 20),
 
               // Visualizations
-              if (byStudentHostel.isNotEmpty) 
+              if (byStudentHostel.isNotEmpty)
                 _buildStudentHostelPieChart(byStudentHostel, isDark),
               if (byCanteenHostel.isNotEmpty) SizedBox(height: 16),
-              if (byCanteenHostel.isNotEmpty) 
+              if (byCanteenHostel.isNotEmpty)
                 _buildCanteenHostelPieChart(byCanteenHostel, isDark),
               if (byStudentHostel.isNotEmpty) SizedBox(height: 16),
-              if (byStudentHostel.isNotEmpty) 
+              if (byStudentHostel.isNotEmpty)
                 _buildDetailedBreakdown(byStudentHostel, isDark),
             ] else ...[
               _buildEmptyState(
                 icon: Icons.restaurant_menu,
                 title: 'No Unauthorized Visits',
-                message: 'No unauthorized canteen visits recorded for ${_months[_selectedMonth - 1]} $_selectedYear',
+                message:
+                    'No unauthorized canteen visits recorded for ${_months[_selectedMonth - 1]} $_selectedYear',
                 color: Colors.green,
                 isDark: isDark,
               ),
@@ -748,7 +803,8 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
             _buildSectionHeader(
               icon: Icons.schedule,
               title: 'Late Arrivals Monitoring',
-              subtitle: 'Student punctuality and time management • ${_months[_selectedMonth - 1]} $_selectedYear',
+              subtitle:
+                  'Student punctuality and time management • ${_months[_selectedMonth - 1]} $_selectedYear',
               color: Colors.orange,
               isDark: isDark,
             ),
@@ -763,7 +819,10 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                     colors: isDark
-                        ? [Colors.orange[900]!.withOpacity(0.3), Colors.red[900]!.withOpacity(0.3)]
+                        ? [
+                            Colors.orange[900]!.withOpacity(0.3),
+                            Colors.red[900]!.withOpacity(0.3)
+                          ]
                         : [Colors.orange[50]!, Colors.red[50]!],
                   ),
                   borderRadius: BorderRadius.circular(12),
@@ -790,22 +849,22 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
               SizedBox(height: 20),
 
               if (details.isNotEmpty) ...[
-                Text(
-                  'Late Arrival Details', 
-                  style: TextStyle(
-                    fontSize: 16, 
-                    fontWeight: FontWeight.bold, 
-                    color: Theme.of(context).colorScheme.onSurface
-                  )
-                ),
+                Text('Late Arrival Details',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).colorScheme.onSurface)),
                 SizedBox(height: 12),
-                ...details.map((student) => _buildStudentLateItem(student, isDark)).toList(),
+                ...details
+                    .map((student) => _buildStudentLateItem(student, isDark))
+                    .toList(),
               ],
             ] else ...[
               _buildEmptyState(
                 icon: Icons.verified_user,
                 title: 'Perfect Punctuality',
-                message: 'No late arrivals recorded for ${_months[_selectedMonth - 1]} $_selectedYear. All students were on time!',
+                message:
+                    'No late arrivals recorded for ${_months[_selectedMonth - 1]} $_selectedYear. All students were on time!',
                 color: Colors.green,
                 isDark: isDark,
               ),
@@ -816,7 +875,12 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
     );
   }
 
-  Widget _buildEmptyState({required IconData icon, required String title, required String message, required Color color, required bool isDark}) {
+  Widget _buildEmptyState(
+      {required IconData icon,
+      required String title,
+      required String message,
+      required Color color,
+      required bool isDark}) {
     return Container(
       padding: EdgeInsets.all(24),
       decoration: BoxDecoration(
@@ -828,17 +892,26 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
         children: [
           Icon(icon, size: 48, color: color),
           SizedBox(height: 16),
-          Text(title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color)),
+          Text(title,
+              style: TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.bold, color: color)),
           SizedBox(height: 8),
-          Text(message, 
+          Text(message,
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 14, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+              style: TextStyle(
+                  fontSize: 14,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant)),
         ],
       ),
     );
   }
 
-  Widget _buildSectionHeader({required IconData icon, required String title, required String subtitle, required Color color, required bool isDark}) {
+  Widget _buildSectionHeader(
+      {required IconData icon,
+      required String title,
+      required String subtitle,
+      required Color color,
+      required bool isDark}) {
     return Row(
       children: [
         Container(
@@ -854,8 +927,13 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
-              Text(subtitle, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+              Text(title,
+                  style: TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+              Text(subtitle,
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant)),
             ],
           ),
         ),
@@ -863,7 +941,12 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
     );
   }
 
-  Widget _buildMetricCard({required String value, required String label, required IconData icon, required Color color, required bool isDark}) {
+  Widget _buildMetricCard(
+      {required String value,
+      required String label,
+      required IconData icon,
+      required Color color,
+      required bool isDark}) {
     return Card(
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -884,8 +967,16 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(value, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: color)),
-                  Text(label, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                  Text(value,
+                      style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: color)),
+                  Text(label,
+                      style: TextStyle(
+                          fontSize: 12,
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant)),
                 ],
               ),
             ),
@@ -895,14 +986,27 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
     );
   }
 
-  Widget _buildStatisticItem({required String value, required String label, required Color color, required String description}) {
+  Widget _buildStatisticItem(
+      {required String value,
+      required String label,
+      required Color color,
+      required String description}) {
     return Column(
       children: [
-        Text(value, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: color)),
+        Text(value,
+            style: TextStyle(
+                fontSize: 24, fontWeight: FontWeight.bold, color: color)),
         SizedBox(height: 4),
-        Text(label, style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant, fontWeight: FontWeight.w500)),
+        Text(label,
+            style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w500)),
         SizedBox(height: 2),
-        Text(description, style: TextStyle(fontSize: 10, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        Text(description,
+            style: TextStyle(
+                fontSize: 10,
+                color: Theme.of(context).colorScheme.onSurfaceVariant)),
       ],
     );
   }
@@ -928,7 +1032,7 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
             ),
           ),
           SizedBox(width: 12),
-          
+
           // Student Info
           Expanded(
             child: Column(
@@ -940,7 +1044,7 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                       child: Text(
                         student['name'] ?? 'Unknown Student',
                         style: TextStyle(
-                          fontSize: 16, 
+                          fontSize: 16,
                           fontWeight: FontWeight.bold,
                           color: Theme.of(context).colorScheme.onSurface,
                         ),
@@ -954,7 +1058,10 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                       ),
                       child: Text(
                         '${student['occurrence_count']}x',
-                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.orange),
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.orange),
                       ),
                     ),
                   ],
@@ -964,10 +1071,16 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                   spacing: 8,
                   runSpacing: 6,
                   children: [
-                    _buildInfoChip(Icons.badge, 'Roll: ${student['roll_no']}', Colors.blue),
-                    _buildInfoChip(Icons.home, 'Hostel ${student['hostel']}', Colors.green),
-                    _buildInfoChip(Icons.timer, '${(student['total_time_exceeded'] ?? 0).toStringAsFixed(1)} min', Colors.orange),
-                    _buildInfoChip(Icons.calendar_today, '${student['date'] ?? 'Unknown'} IST', Colors.purple),
+                    _buildInfoChip(Icons.badge, 'Roll: ${student['roll_no']}',
+                        Colors.blue),
+                    _buildInfoChip(Icons.home, 'Hostel ${student['hostel']}',
+                        Colors.green),
+                    _buildInfoChip(
+                        Icons.timer,
+                        '${(student['total_time_exceeded'] ?? 0).toStringAsFixed(1)} min',
+                        Colors.orange),
+                    _buildInfoChip(Icons.calendar_today,
+                        '${student['date'] ?? 'Unknown'} IST', Colors.purple),
                   ],
                 ),
               ],
@@ -990,13 +1103,14 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
         children: [
           Icon(icon, size: 12, color: color),
           SizedBox(width: 4),
-          Text(text, style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w500)),
+          Text(text,
+              style: TextStyle(
+                  fontSize: 10, color: color, fontWeight: FontWeight.w500)),
         ],
       ),
     );
   }
 
- 
   Widget _buildStudentHostelPieChart(List<dynamic> data, bool isDark) {
     return Card(
       elevation: 2,
@@ -1007,9 +1121,9 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Visits by Student Hostel', 
+              'Visits by Student Hostel',
               style: TextStyle(
-                fontSize: 16, 
+                fontSize: 16,
                 fontWeight: FontWeight.bold,
                 color: Theme.of(context).colorScheme.onSurface,
               ),
@@ -1022,13 +1136,17 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                   sections: data.asMap().entries.map((entry) {
                     final index = entry.key;
                     final item = entry.value;
-                    final value = (item['total_visits'] ?? item['visits'] ?? 0).toDouble();
+                    final value = (item['total_visits'] ?? item['visits'] ?? 0)
+                        .toDouble();
                     return PieChartSectionData(
                       color: _getChartColor(index),
                       value: value,
                       title: '${value.toInt()}',
                       radius: 60,
-                      titleStyle: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                      titleStyle: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white),
                     );
                   }).toList(),
                   centerSpaceRadius: 40,
@@ -1053,9 +1171,9 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Visits by Canteen Hostel', 
+              'Visits by Canteen Hostel',
               style: TextStyle(
-                fontSize: 16, 
+                fontSize: 16,
                 fontWeight: FontWeight.bold,
                 color: Theme.of(context).colorScheme.onSurface,
               ),
@@ -1068,13 +1186,17 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
                   sections: data.asMap().entries.map((entry) {
                     final index = entry.key;
                     final item = entry.value;
-                    final value = (item['total_visits'] ?? item['visits'] ?? 0).toDouble();
+                    final value = (item['total_visits'] ?? item['visits'] ?? 0)
+                        .toDouble();
                     return PieChartSectionData(
                       color: _getChartColor(index),
                       value: value,
                       title: '${value.toInt()}',
                       radius: 60,
-                      titleStyle: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                      titleStyle: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white),
                     );
                   }).toList(),
                   centerSpaceRadius: 40,
@@ -1099,7 +1221,11 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
         return Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(width: 12, height: 12, color: _getChartColor(index),),
+            Container(
+              width: 12,
+              height: 12,
+              color: _getChartColor(index),
+            ),
             SizedBox(width: 6),
             Text(
               'Hostel ${item['hostel']}',
@@ -1123,7 +1249,11 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
         return Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(width: 12, height: 12, color: _getChartColor(index),),
+            Container(
+              width: 12,
+              height: 12,
+              color: _getChartColor(index),
+            ),
             SizedBox(width: 6),
             Text(
               'Canteen ${item['canteen']}',
@@ -1140,87 +1270,182 @@ class _MonthlyAnalyticsScreenState extends State<MonthlyAnalyticsScreen> {
   Widget _buildDetailedBreakdown(List<dynamic> data, bool isDark) {
     return Card(
       elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
       child: Padding(
         padding: EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Detailed Visit Breakdown', 
+              'Detailed Unauthorized Visit Breakdown',
               style: TextStyle(
-                fontSize: 16, 
+                fontSize: 16,
                 fontWeight: FontWeight.bold,
                 color: Theme.of(context).colorScheme.onSurface,
               ),
             ),
+            SizedBox(height: 6),
+            Text(
+              'Student hostel → Canteen visited',
+              style: TextStyle(
+                fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
             SizedBox(height: 16),
-            ...data.map((hostelData) => _buildHostelBreakdown(hostelData, data.indexOf(hostelData), isDark)).toList(),
+            ...data.asMap().entries.map((entry) {
+              return _buildHostelBreakdown(
+                entry.value,
+                entry.key,
+                isDark,
+              );
+            }).toList(),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildHostelBreakdown(Map<String, dynamic> hostelData, int index, bool isDark) {
+  Widget _buildHostelBreakdown(
+    Map<String, dynamic> hostelData,
+    int index,
+    bool isDark,
+  ) {
+    final List<dynamic> canteenData =
+        hostelData['data'] is List ? hostelData['data'] : [];
+
+    final int totalVisits = hostelData['total_visits'] is num
+        ? hostelData['total_visits'].toInt()
+        : 0;
+
     return Container(
       margin: EdgeInsets.only(bottom: 16),
+      padding: EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _getChartColor(index).withOpacity(0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: _getChartColor(index).withOpacity(0.25),
+        ),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ListTile(
-            leading: CircleAvatar(
-              backgroundColor: _getChartColor(index),
-              child: Text(hostelData['hostel'], style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            ),
-            title: Text(
-              'Hostel ${hostelData['hostel']}', 
-              style: TextStyle(
-                fontWeight: FontWeight.w500,
-                color: Theme.of(context).colorScheme.onSurface,
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 18,
+                backgroundColor: _getChartColor(index),
+                child: Text(
+                  '${hostelData['hostel']}',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
-            ),
-            trailing: Text(
-              '${hostelData['total_visits']} visits', 
-              style: TextStyle(
-                fontWeight: FontWeight.bold, 
-                color: _getChartColor(index)
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Student Hostel ${hostelData['hostel']}',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
               ),
-            ),
+              Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: _getChartColor(index).withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '$totalVisits visits',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: _getChartColor(index),
+                  ),
+                ),
+              ),
+            ],
           ),
-          ...(hostelData['data'] as List).map((canteenData) => 
+          SizedBox(height: 12),
+          if (canteenData.isEmpty)
             Padding(
-              padding: EdgeInsets.only(left: 16, bottom: 8),
-              child: Row(
-                children: [
-                  Icon(Icons.arrow_forward_ios, size: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                  SizedBox(width: 8),
-                  Text(
-                    'Canteen ${canteenData['canteen']}:',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurface,
-                    ),
-                  ),
-                  SizedBox(width: 8),
-                  Text(
-                    '${canteenData['visits']} visits', 
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold, 
-                      color: Colors.green
-                    ),
-                  ),
-                ],
+              padding: EdgeInsets.only(left: 48),
+              child: Text(
+                'No canteen details available',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
-            ),
-          ),
-          Divider(),
+            )
+          else
+            ...canteenData.map((canteen) {
+              final String canteenName =
+                  canteen['canteen']?.toString() ?? 'Unknown';
+
+              final int visits =
+                  canteen['visits'] is num ? canteen['visits'].toInt() : 0;
+
+              return Padding(
+                padding: EdgeInsets.only(
+                  left: 48,
+                  top: 6,
+                  bottom: 6,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.arrow_forward_ios,
+                      size: 12,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Canteen $canteenName',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '$visits ${visits == 1 ? 'visit' : 'visits'}',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
         ],
       ),
     );
   }
 
   Color _getChartColor(int index) {
-    final colors = [Colors.blue, Colors.green, Colors.orange, Colors.purple, Colors.red, Colors.teal, Colors.pink, Colors.indigo];
+    final colors = [
+      Colors.blue,
+      Colors.green,
+      Colors.orange,
+      Colors.purple,
+      Colors.red,
+      Colors.teal,
+      Colors.pink,
+      Colors.indigo
+    ];
     return colors[index % colors.length];
   }
 }

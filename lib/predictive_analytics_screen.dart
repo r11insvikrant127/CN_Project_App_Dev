@@ -186,9 +186,14 @@ class _PredictiveAnalyticsScreenState extends State<PredictiveAnalyticsScreen> {
       }
     }
 
-    double accuracy = dataPoints > 0 && totalActual > 0
-        ? (1 - (totalActual - totalPredicted).abs() / totalActual) * 100
-        : 0;
+    double accuracy = 0.0;
+
+    if (dataPoints > 0 && totalActual > 0) {
+      accuracy =
+          (1 - (totalActual - totalPredicted).abs() / totalActual) * 100;
+
+      accuracy = accuracy.clamp(0.0, 100.0);
+    }
 
     // Safely extract summary values
     final totalVisits = summary['total_visits'] is num

@@ -767,7 +767,13 @@ def get_predictive_insights(days=30, hostel=None, user_role=None, db=None):
     
     # Get all unauthorized visits for analysis
     visits = list(db.canteen_visits.find(match_filter))
-    
+
+    # Normalize all MongoDB timestamps to timezone-aware IST
+    for visit in visits:
+        if visit.get('timestamp'):
+            visit['timestamp'] = normalize_datetime_to_ist(
+                visit['timestamp']
+            )
     if not visits:
         return {
             'message': 'Insufficient data for predictive analysis',
@@ -807,8 +813,16 @@ def _generate_predictive_insights(visits):
     for visit in visits:
         student_hostel = visit.get('student_hostel', 'Unknown')
         canteen_hostel = visit.get('canteen_hostel', 'Unknown')
-        day_of_week = visit['timestamp'].strftime('%A')
-        hour = visit['timestamp'].hour
+
+        visit_timestamp = normalize_datetime_to_ist(
+            visit.get('timestamp')
+        )
+
+        if not visit_timestamp:
+            continue
+
+        day_of_week = visit_timestamp.strftime('%A')
+        hour = visit_timestamp.hour
         
         hostel_patterns[student_hostel][canteen_hostel] += 1
         day_patterns[student_hostel][day_of_week] += 1
@@ -926,7 +940,9 @@ def _predict_next_week_visits(
     daily_visits = defaultdict(int)
 
     for visit in visits:
-        timestamp = visit.get('timestamp')
+        timestamp = normalize_datetime_to_ist(
+            visit.get('timestamp')
+        )
 
         if not timestamp:
             continue
@@ -1196,18 +1212,30 @@ def _generate_ai_alerts(visits, db=None):
     
     cutoff_24h = get_ist_now() - timedelta(hours=24)
     cutoff_2h = get_ist_now() - timedelta(hours=2)
-    
+
     for visit in visits:
         student_hostel = visit.get('student_hostel', 'Unknown')
-        hour = visit['timestamp'].hour
-        
+
+        visit_timestamp = visit.get('timestamp')
+
+        if not visit_timestamp:
+            continue
+
+        # Normalize MongoDB timestamps to timezone-aware IST
+        if visit_timestamp.tzinfo is None:
+            visit_timestamp = visit_timestamp.replace(tzinfo=timezone.utc)
+
+        visit_timestamp = visit_timestamp.astimezone(INDIA_TZ)
+
+        hour = visit_timestamp.hour
+
         hourly_activity[student_hostel][hour] += 1
         hostel_activity[student_hostel] += 1
-        
-        if visit['timestamp'] >= cutoff_24h:
+
+        if visit_timestamp >= cutoff_24h:
             recent_activity[student_hostel] += 1
-        
-        if visit['timestamp'] >= cutoff_2h:
+
+        if visit_timestamp >= cutoff_2h:
             if recent_activity[student_hostel] >= 5:
                 alerts.append({
                     'type': 'high_activity_short_term',

@@ -497,13 +497,54 @@ class _ScanScreenState extends State<ScanScreen> {
 
   // ✅ NEW: Process and display student data
   void _processAndDisplayStudentData(Map<String, dynamic> studentData) {
-    // Check if access is denied
+    // Existing access-denied handling
     if (studentData['access_denied'] == true) {
       _showStudentScanResult(studentData);
       return;
     }
 
-    // Check hostel access for security and canteen roles
+    // ============================================================
+    // CANTEEN ONLY:
+    // Student can be fetched from any hostel, but authorization
+    // depends on whether the student's hostel matches the canteen.
+    // ============================================================
+    if (widget.role.startsWith('canteen_')) {
+      final studentHostel =
+          studentData['hostel']?.toString().toUpperCase();
+      final canteenHostel = widget.hostel?.toString().toUpperCase();
+
+      final isAuthorized =
+          studentHostel != null &&
+          canteenHostel != null &&
+          studentHostel == canteenHostel;
+
+      studentData['is_authorized'] = isAuthorized;
+      studentData['unauthorized'] = !isAuthorized;
+
+      if (!isAuthorized) {
+        studentData['access_denied'] = true;
+        studentData['message'] = 'Student belongs to different hostel';
+        studentData['student_hostel'] = studentHostel;
+        studentData['user_hostel'] = canteenHostel;
+
+        print(
+          '🔍 DEBUG: ⚠️ Canteen hostel mismatch: '
+          'Student=$studentHostel, Canteen=$canteenHostel',
+        );
+      } else {
+        print(
+          '🔍 DEBUG: ✅ Canteen authorization granted: '
+          'Student=$studentHostel, Canteen=$canteenHostel',
+        );
+      }
+
+      _showStudentScanResult(studentData);
+      return;
+    }
+
+    // ============================================================
+    // SECURITY ONLY — EXISTING LOGIC UNTOUCHED
+    // ============================================================
     if (widget.role.startsWith('security_')) {
       if (studentData['belongs_to_hostel'] != null) {
         if (studentData['belongs_to_hostel'] == true) {
@@ -522,11 +563,41 @@ class _ScanScreenState extends State<ScanScreen> {
       }
     }
 
+    // Admin / other existing roles
     _showStudentScanResult(studentData);
   }
 
   // ✅ NEW: Check hostel access and display
   void _checkHostelAccessAndDisplay(Map<String, dynamic> studentData) {
+
+      // ============================================================
+      // CANTEEN ONLY:
+      // Determine authorization from student hostel vs canteen hostel.
+      // ============================================================
+      if (widget.role.startsWith('canteen_')) {
+        final studentHostel =
+            studentData['hostel']?.toString().toUpperCase();
+        final canteenHostel = widget.hostel?.toString().toUpperCase();
+
+        final isAuthorized =
+            studentHostel != null &&
+            canteenHostel != null &&
+            studentHostel == canteenHostel;
+
+      studentData['is_authorized'] = isAuthorized;
+      studentData['unauthorized'] = !isAuthorized;
+
+      if (!isAuthorized) {
+        studentData['access_denied'] = true;
+        studentData['message'] = 'Student belongs to different hostel';
+        studentData['student_hostel'] = studentHostel;
+        studentData['user_hostel'] = canteenHostel;
+      }
+
+      _showStudentScanResult(studentData);
+      return;
+    }
+    
     // Check hostel access based on role
     if (widget.role.startsWith('security_')) {
       if (studentData['hostel'] == widget.hostel) {

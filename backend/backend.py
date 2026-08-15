@@ -1260,61 +1260,67 @@ def get_ai_realtime_alerts():
 
         device_id, user_role = identity_string.split(':', 1)
 
-        if user_role not in ['admin'] and not user_role.startswith('super_'):
+        # Only admin and hostel supervisors can access AI security alerts
+        if user_role != 'admin' and not user_role.startswith('super_'):
             return jsonify({'message': 'Access denied'}), 403
 
         hours = request.args.get('hours', default=2, type=int)
-
-        # Prevent invalid/huge requests
         hours = max(1, min(hours, 168))
 
         cutoff_time = datetime.now(INDIA_TZ) - timedelta(hours=hours)
 
+        # Fetch actual security alerts from MongoDB
         query = {
-            'timestamp': {'$gte': cutoff_time},
-            'type': 'unauthorized_visit'
+            'timestamp': {'$gte': cutoff_time}
         }
-
-        # Super user sees only unauthorized visits involving
-        # students from their own hostel.
-        if user_role.startswith('super_'):
-            hostel = user_role.split('_', 1)[1].upper()
-            query['details.student_hostel'] = hostel
 
         alerts = list(
             db.realtime_alerts.find(
                 query,
                 {'_id': 0}
-            )
-            .sort('timestamp', -1)
-            .limit(50)
+            ).sort('timestamp', -1).limit(50)
         )
+
+        # Hostel-based filtering for supervisors
+        if user_role.startswith('super_'):
+            supervisor_hostel = user_role.split('_', 1)[1].upper()
+
+            filtered_alerts = []
+
+            for alert in alerts:
+                details = alert.get('details', {})
+
+                student_hostel = details.get(
+                    'student_hostel',
+                    alert.get('student_hostel')
+                )
+
+                canteen_hostel = details.get(
+                    'canteen_hostel',
+                    alert.get('canteen_hostel')
+                )
+
+                if (
+                    student_hostel == supervisor_hostel
+                    or canteen_hostel == supervisor_hostel
+                ):
+                    filtered_alerts.append(alert)
+
+            alerts = filtered_alerts
 
         return jsonify({
             'alerts': alerts,
-            'total_unauthorized_visits': len(alerts),
-            'timeframe_hours': hours,
-            'scope': (
-                'hostel'
-                if user_role.startswith('super_')
-                else 'system'
-            ),
-            'hostel': (
-                user_role.split('_', 1)[1].upper()
-                if user_role.startswith('super_')
-                else None
-            ),
-            'generated_at': datetime.now(INDIA_TZ).isoformat()
+            'total_alerts': len(alerts),
+            'timeframe_hours': hours
         }), 200
 
     except Exception as e:
-        print(f"Error in AI real-time alerts: {e}")
+        print(f"❌ Error loading real-time alerts: {e}")
         return jsonify({
-            'alerts': [],
-            'total_unauthorized_visits': 0,
-            'message': str(e)
+            'message': f'Error: {str(e)}'
         }), 500
 
+        
 @app.route('/api/canteen/weekly-report', methods=['POST'])
 @jwt_required()
 def submit_weekly_canteen_report_endpoint():

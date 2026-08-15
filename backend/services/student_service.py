@@ -70,15 +70,19 @@ def get_student_with_role(roll_no, user_role, requested_role, db=None):
     # Get user's hostel from role
     user_hostel = user_role.split('_')[1].upper() if '_' in user_role else 'ALL'
     
-    # Check hostel access for non-admin roles
+    # Check hostel access for non-admin roles.
+    # Canteen staff are allowed to look up students from other hostels
+    # so the canteen scan endpoint can record the visit as unauthorized.
+    # Security and other roles retain the existing hostel restriction.
     if user_role != 'admin' and '_' in user_role:
         if student.get('hostel') != user_hostel:
-            return {
-                'message': 'This student does not belong to your hostel',
-                'student_hostel': student.get('hostel'),
-                'user_hostel': user_hostel,
-                'access_denied': True
-            }, 403
+            if not user_role.startswith('canteen_'):
+                return {
+                    'message': 'This student does not belong to your hostel',
+                    'student_hostel': student.get('hostel'),
+                    'user_hostel': user_hostel,
+                    'access_denied': True
+                }, 403
     
     # Serialize dates to IST
     def serialize_dates(obj):

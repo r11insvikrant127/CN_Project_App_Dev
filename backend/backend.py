@@ -58,6 +58,20 @@ from services.analytics_service import (
 )
 
 from services.notification_service import register_fcm_token
+
+# Service-layer aliases used by thin Flask route wrappers.
+from services.analytics_service import (
+    get_monthly_unauthorized_visits as analytics_get_monthly_unauthorized_visits,
+    calculate_weekly_late_arrivals as analytics_calculate_weekly_late_arrivals,
+    get_unauthorized_visits_analytics as analytics_get_unauthorized_visits_analytics,
+    get_late_arrivals_analytics as analytics_get_late_arrivals_analytics,
+    get_visit_trends as analytics_get_visit_trends,
+)
+from services.alert_service import get_weekly_summary as alert_get_weekly_summary
+from services.sync_service import (
+    sync_security_scans as sync_security_scans_service,
+    sync_canteen_visits as sync_canteen_visits_service,
+)
 # ============================================================
 
 # India timezone (UTC+5:30)
@@ -1122,22 +1136,26 @@ def get_student_with_role_endpoint(roll_no, selected_role):
 def handle_security_scan(selected_role):
     try:
         identity_string = get_jwt_identity()
-        if ':' in identity_string:
-            device_id, user_role = identity_string.split(':', 1)
-        else:
+        if ':' not in identity_string:
             return jsonify({'message': 'Invalid token format'}), 401
+
+        device_id, user_role = identity_string.split(':', 1)
 
         if user_role != selected_role:
             return jsonify({'message': 'Role mismatch'}), 403
 
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
 
-        # Use the movement service
-        result, status_code = process_security_scan(user_role, data)
-        return jsonify(result), status_code
+        response_data, status_code = process_security_scan(
+            user_role=user_role,
+            data=data,
+            db=get_db()
+        )
+
+        return jsonify(response_data), status_code
 
     except Exception as e:
-        print(f"❌ Error in security scan: {e}")
+        print(f"Error in handle_security_scan: {e}")
         return jsonify({'message': f'Server error: {str(e)}'}), 500
 # ============================================================
 
@@ -1273,118 +1291,37 @@ def submit_weekly_canteen_report_endpoint():
 def get_monthly_unauthorized_visits():
     try:
         identity_string = get_jwt_identity()
-        if ':' in identity_string:
-            device_id, user_role = identity_string.split(':', 1)
-            if user_role not in ['admin'] and not user_role.startswith('super_'):
-                return jsonify({'message': 'Access denied'}), 403
+        if ':' not in identity_string:
+            return jsonify({'message': 'Invalid token format'}), 401
 
-        # Get month, year, and optional hostel from query params
-        year = int(request.args.get('year', datetime.now(INDIA_TZ).year))
-        month = int(request.args.get('month', datetime.now(INDIA_TZ).month))
-        requested_hostel = request.args.get('hostel')  # For super users
+        device_id, user_role = identity_string.split(':', 1)
 
-        start_date = datetime(year, month, 1, tzinfo=INDIA_TZ)
-        if month == 12:
-            end_date = datetime(year + 1, 1, 1, tzinfo=INDIA_TZ)
-        else:
-            end_date = datetime(year, month + 1, 1, tzinfo=INDIA_TZ)
+        if user_role not in ['admin'] and not user_role.startswith('super_'):
+            return jsonify({'message': 'Access denied'}), 403
 
-        print(f"📊 Fetching monthly data for {month}/{year}, hostel: {requested_hostel}")
+        year = request.args.get('year', type=int)
+        month = request.args.get('month', type=int)
+        hostel = request.args.get('hostel')
 
-        # Build match filter based on user role
-        match_filter = {
-            'timestamp': {'$gte': start_date, '$lt': end_date},
-            'is_unauthorized': True
-        }
+        if user_role.startswith('super_'):
+            hostel = user_role.split('_', 1)[1].upper()
 
-        # If super user, filter by their hostel
-        if user_role.startswith('super_') and requested_hostel:
-            # Super can see both students from their hostel going elsewhere
-            # AND students from other hostels coming to their canteen
-            match_filter['$or'] = [
-                {'student_hostel': requested_hostel},
-                {'canteen_hostel': requested_hostel}
-            ]
+        result = analytics_get_monthly_unauthorized_visits(
+            year=year,
+            month=month,
+            hostel=hostel,
+            user_role=user_role,
+            db=get_db()
+        )
 
-        # Aggregate data for pie chart (actual implementation)
-        pipeline = [
-            {'$match': match_filter},
-            {'$group': {
-                '_id': {
-                    'student_hostel': '$student_hostel',
-                    'canteen_hostel': '$canteen_hostel'
-                },
-                'visit_count': {'$sum': 1},
-                'students_count': {'$addToSet': '$roll_no'}
-            }},
-            {'$project': {
-                'student_hostel': '$_id.student_hostel',
-                'canteen_hostel': '$_id.canteen_hostel',
-                'visit_count': 1,
-                'unique_students': {'$size': '$students_count'}
-            }},
-            {'$sort': {'visit_count': -1}}
-        ]
+        if isinstance(result, dict) and result.get('error'):
+            return jsonify(result), 500
 
-        results = list(db.canteen_visits.aggregate(pipeline))
-
-        # Prepare data for pie charts
-        hostel_breakdown = defaultdict(lambda: defaultdict(int))
-        canteen_breakdown = defaultdict(int)
-
-        for result in results:
-            student_hostel = result.get('student_hostel', 'Unknown')
-            canteen_hostel = result.get('canteen_hostel', 'Unknown')
-            visit_count = result.get('visit_count', 0)
-
-            hostel_breakdown[student_hostel][canteen_hostel] += visit_count
-            canteen_breakdown[canteen_hostel] += visit_count
-
-        # Convert to pie chart format
-        pie_chart_data = {
-            'by_student_hostel': [
-                {
-                    'hostel': student_hostel,
-                    'data': [
-                        {'canteen': canteen, 'visits': count}
-                        for canteen, count in canteens.items()
-                    ],
-                    'total_visits': sum(canteens.values())
-                }
-                for student_hostel, canteens in hostel_breakdown.items()
-            ],
-            'by_canteen_hostel': [
-                {'canteen': canteen, 'visits': count}
-                for canteen, count in canteen_breakdown.items()
-            ],
-            'summary': {
-                'month': month,
-                'year': year,
-                'total_unauthorized_visits': sum(canteen_breakdown.values()),
-                'unique_students_involved': len(set(
-                    f"{r.get('student_hostel', 'Unknown')}-{r.get('canteen_hostel', 'Unknown')}"
-                    for r in results
-                )),
-                'filtered_by_hostel': requested_hostel if user_role.startswith('super_') else 'ALL'
-            }
-        }
-
-        return jsonify(pie_chart_data), 200
+        return jsonify(result), 200
 
     except Exception as e:
-        print(f"❌ Error in monthly analytics: {e}")
-        # Return empty data if there's an error
-        return jsonify({
-            'by_student_hostel': [],
-            'by_canteen_hostel': [],
-            'summary': {
-                'month': month,
-                'year': year,
-                'total_unauthorized_visits': 0,
-                'unique_students_involved': 0,
-                'filtered_by_hostel': requested_hostel if user_role.startswith('super_') else 'ALL'
-            }
-        }), 200
+        print(f"Error in get_monthly_unauthorized_visits: {e}")
+        return jsonify({'message': f'Server error: {str(e)}'}), 500
 
 # Enhanced weekly late arrivals calculation
 @app.route('/api/analytics/late-arrivals-weekly', methods=['POST'])
@@ -1392,115 +1329,31 @@ def get_monthly_unauthorized_visits():
 def calculate_weekly_late_arrivals():
     try:
         identity_string = get_jwt_identity()
-        if ':' in identity_string:
-            device_id, user_role = identity_string.split(':', 1)
-            if user_role not in ['admin'] and not user_role.startswith('super_'):
-                return jsonify({'message': 'Access denied'}), 403
+        if ':' not in identity_string:
+            return jsonify({'message': 'Invalid token format'}), 401
 
-        data = request.get_json()
-        week_number = data.get('week', datetime.now(INDIA_TZ).isocalendar()[1])
-        year = data.get('year', datetime.now(INDIA_TZ).year)
+        device_id, user_role = identity_string.split(':', 1)
 
-        # Calculate start and end of week (Monday to Sunday)
-        start_date = datetime.fromisocalendar(year, week_number, 1).replace(tzinfo=INDIA_TZ)  # Monday
-        end_date = start_date + timedelta(days=7)  # Next Monday
+        if user_role not in ['admin'] and not user_role.startswith('super_'):
+            return jsonify({'message': 'Access denied'}), 403
 
-        print(f"📅 Calculating weekly late arrivals for week {week_number}, {year}")
-        print(f"📅 Date range: {start_date} to {end_date}")
+        data = request.get_json(silent=True) or {}
 
-        # First, verify we have data for this period
-        cutoff_time = datetime.now(INDIA_TZ) - timedelta(days=30)
-        if end_date < cutoff_time:
-            return jsonify({
-                'message': f'Data for week {week_number}, {year} has been cleaned up (older than 30 days)',
-                'error': 'data_cleaned'
-            }), 400
+        result = analytics_calculate_weekly_late_arrivals(
+            week_number=data.get('week_number'),
+            year=data.get('year'),
+            user_role=user_role,
+            db=get_db()
+        )
 
-        # Aggregate late arrivals for the week
-        pipeline = [
-            {'$unwind': '$disciplinary_records'},
-            {'$match': {
-                'disciplinary_records.description': {'$regex': 'exceeded allowed time', '$options': 'i'},
-                'disciplinary_records.recorded_at': {'$gte': start_date, '$lt': end_date},
-                'disciplinary_records.auto_generated': True
-            }},
-            {'$group': {
-                '_id': {
-                    'roll_no': '$roll_no',
-                    'name': '$name',
-                    'hostel': '$hostel'
-                },
-                'late_count': {'$sum': 1},
-                'total_time_exceeded': {'$sum': '$disciplinary_records.time_exceeded_minutes'},
-                'dates': {'$addToSet': '$disciplinary_records.recorded_at'},
-                'last_occurrence': {'$max': '$disciplinary_records.recorded_at'}
-            }},
-            {'$project': {
-                'roll_no': '$_id.roll_no',
-                'name': '$_id.name',
-                'hostel': '$_id.hostel',
-                'late_count': 1,
-                'total_time_exceeded': 1,
-                'unique_dates': {'$size': '$dates'},
-                'dates': {
-                    '$map': {
-                        'input': '$dates',
-                        'as': 'date',
-                        'in': {'$dateToString': {'format': '%Y-%m-%d', 'date': '$$date'}}
-                    }
-                },
-                'last_occurrence': {'$dateToString': {'format': '%Y-%m-%d', 'date': '$last_occurrence'}}
-            }},
-            {'$sort': {'late_count': -1}}
-        ]
+        if isinstance(result, dict) and result.get('error'):
+            return jsonify(result), 400
 
-        results = list(db.students.aggregate(pipeline))
-
-        print(f"📊 Found {len(results)} students with late arrivals")
-
-        # Store weekly summary
-        weekly_summary = {
-            'week_number': week_number,
-            'year': year,
-            'calculation_date': datetime.now(INDIA_TZ),
-            'date_range': {
-                'start': start_date,
-                'end': end_date
-            },
-            'total_students_with_late_arrivals': len(results),
-            'total_late_occurrences': sum(r['late_count'] for r in results),
-            'total_time_exceeded_minutes': sum(r.get('total_time_exceeded', 0) for r in results),
-            'details': results,
-            'report_type': 'late_arrivals_weekly',
-            'calculated_by': user_role
-        }
-
-        # Remove old report for same week if exists
-        db.weekly_reports.delete_many({
-            'week_number': week_number,
-            'year': year,
-            'report_type': 'late_arrivals_weekly'
-        })
-
-        # Insert new report
-        db.weekly_reports.insert_one(weekly_summary)
-
-        return jsonify({
-            'message': f'Weekly late arrivals calculated for week {week_number}, {year}',
-            'summary': {
-                'week_number': week_number,
-                'year': year,
-                'total_students': len(results),
-                'total_occurrences': sum(r['late_count'] for r in results),
-                'total_time_exceeded_minutes': sum(r.get('total_time_exceeded', 0) for r in results),
-                'calculation_date': weekly_summary['calculation_date'].isoformat()
-            },
-            'student_details': results
-        }), 200
+        return jsonify(result), 200
 
     except Exception as e:
-        print(f"❌ Error in weekly late arrivals calculation: {e}")
-        return jsonify({'message': f'Error: {str(e)}'}), 500
+        print(f"Error in calculate_weekly_late_arrivals: {e}")
+        return jsonify({'message': f'Server error: {str(e)}'}), 500
 
 @app.route('/api/analytics/late-arrivals-reports', methods=['GET'])
 @jwt_required()
@@ -1645,82 +1498,35 @@ def record_canteen_visit(selected_role):
 def get_unauthorized_visits_analytics():
     try:
         identity_string = get_jwt_identity()
-        if ':' in identity_string:
-            device_id, user_role = identity_string.split(':', 1)
-            if user_role not in ['admin'] and not user_role.startswith('super_'):
-                return jsonify({'message': 'Access denied'}), 403
+        if ':' not in identity_string:
+            return jsonify({'message': 'Invalid token format'}), 401
 
-        # Get timeframe and optional hostel from query params
-        days = int(request.args.get('days', 30))
-        requested_hostel = request.args.get('hostel')  # For super users
-        cutoff_date = datetime.now(INDIA_TZ) - timedelta(days=days)
+        device_id, user_role = identity_string.split(':', 1)
 
-        # Build match filter based on user role
-        match_filter = {
-            'timestamp': {'$gte': cutoff_date},
-            'is_unauthorized': True
-        }
+        if user_role not in ['admin'] and not user_role.startswith('super_'):
+            return jsonify({'message': 'Access denied'}), 403
 
-        # If super user, filter by their hostel
-        if user_role.startswith('super_') and requested_hostel:
-            match_filter['$or'] = [
-                {'student_hostel': requested_hostel},
-                {'canteen_hostel': requested_hostel}
-            ]
+        days = request.args.get('days', default=30, type=int)
+        hostel = request.args.get('hostel')
 
-        pipeline = [
-            {'$match': match_filter},
-            {'$group': {
-                '_id': {
-                    'student_hostel': '$student_hostel',
-                    'canteen_hostel': '$canteen_hostel',
-                    'date': '$date'
-                },
-                'visit_count': {'$sum': 1},
-                'latest_visit': {'$max': '$timestamp'}
-            }},
-            {'$sort': {'visit_count': -1}}
-        ]
+        if user_role.startswith('super_'):
+            hostel = user_role.split('_', 1)[1].upper()
 
-        results = list(db.canteen_visits.aggregate(pipeline))
+        result = analytics_get_unauthorized_visits_analytics(
+            days=days,
+            hostel=hostel,
+            user_role=user_role,
+            db=get_db()
+        )
 
-        # Process for charts
-        hostel_analysis = defaultdict(lambda: defaultdict(int))
-        hourly_analysis = defaultdict(int)
-        daily_analysis = defaultdict(int)
+        if isinstance(result, dict) and result.get('error'):
+            return jsonify(result), 500
 
-        for result in results:
-            student_hostel = result['_id']['student_hostel']
-            canteen_hostel = result['_id']['canteen_hostel']
-            hostel_analysis[student_hostel][canteen_hostel] += result['visit_count']
-
-            # Extract hour from latest visit
-            hour = result['latest_visit'].hour
-            hourly_analysis[hour] += result['visit_count']
-
-            # Daily analysis
-            day = result['_id']['date'].strftime('%Y-%m-%d')
-            daily_analysis[day] += result['visit_count']
-
-        # Predictive analytics
-        predictions = predict_unauthorized_visits(daily_analysis)
-
-        return jsonify({
-            'summary': {
-                'total_unauthorized_visits': sum(daily_analysis.values()),
-                'analysis_period_days': days,
-                'average_daily_visits': sum(daily_analysis.values()) / len(daily_analysis) if daily_analysis else 0,
-                'filtered_by_hostel': requested_hostel if user_role.startswith('super_') else 'ALL'
-            },
-            'hostel_analysis': hostel_analysis,
-            'hourly_analysis': dict(hourly_analysis),
-            'daily_analysis': dict(daily_analysis),
-            'predictions': predictions,
-            'alerts': _generate_analytics_alerts(hostel_analysis, daily_analysis)
-        }), 200
+        return jsonify(result), 200
 
     except Exception as e:
-        return jsonify({'message': f'Error: {str(e)}'}), 500
+        print(f"Error in get_unauthorized_visits_analytics: {e}")
+        return jsonify({'message': f'Server error: {str(e)}'}), 500
 
 
 def _generate_analytics_alerts(hostel_analysis, daily_analysis):
@@ -1777,54 +1583,33 @@ def _send_unauthorized_alert(visit_record):
 def get_late_arrivals_analytics():
     try:
         identity_string = get_jwt_identity()
-        if ':' in identity_string:
-            device_id, user_role = identity_string.split(':', 1)
-            if user_role not in ['admin'] and not user_role.startswith('super_'):
-                return jsonify({'message': 'Access denied'}), 403
+        if ':' not in identity_string:
+            return jsonify({'message': 'Invalid token format'}), 401
 
-        # Get optional hostel filter for super users
-        requested_hostel = request.args.get('hostel')
+        device_id, user_role = identity_string.split(':', 1)
 
-        # Build match filter
-        match_filter = {
-            'disciplinary_records.description': {'$regex': 'exceeded allowed time', '$options': 'i'}
-        }
+        if user_role not in ['admin'] and not user_role.startswith('super_'):
+            return jsonify({'message': 'Access denied'}), 403
 
-        # If super user, filter by their hostel
-        if user_role.startswith('super_') and requested_hostel:
-            match_filter['hostel'] = requested_hostel
+        hostel = request.args.get('hostel')
 
-        # Get students with disciplinary records for late arrivals
-        pipeline = [
-            {'$unwind': '$disciplinary_records'},
-            {'$match': match_filter},
-            {'$group': {
-                '_id': {
-                    'roll_no': '$roll_no',
-                    'name': '$name',
-                    'hostel': '$hostel',
-                    'week': {'$week': '$disciplinary_records.recorded_at'}
-                },
-                'late_count': {'$sum': 1},
-                'last_occurrence': {'$max': '$disciplinary_records.recorded_at'},
-                'total_time_exceeded': {'$sum': '$disciplinary_records.time_exceeded_minutes'}
-            }},
-            {'$sort': {'late_count': -1}}
-        ]
+        if user_role.startswith('super_'):
+            hostel = user_role.split('_', 1)[1].upper()
 
-        results = list(db.students.aggregate(pipeline))
+        result = analytics_get_late_arrivals_analytics(
+            hostel=hostel,
+            user_role=user_role,
+            db=get_db()
+        )
 
-        return jsonify({
-            'weekly_late_arrivals': results,
-            'summary': {
-                'total_students_with_late_arrivals': len(set(r['_id']['roll_no'] for r in results)),
-                'total_late_occurrences': sum(r['late_count'] for r in results),
-                'filtered_by_hostel': requested_hostel if user_role.startswith('super_') else 'ALL'
-            }
-        }), 200
+        if isinstance(result, dict) and result.get('error'):
+            return jsonify(result), 500
+
+        return jsonify(result), 200
 
     except Exception as e:
-        return jsonify({'message': f'Error: {str(e)}'}), 500
+        print(f"Error in get_late_arrivals_analytics: {e}")
+        return jsonify({'message': f'Server error: {str(e)}'}), 500
 
 # Admin/Super scan endpoint for verification
 @app.route('/api/student/scan/admin/<selected_role>', methods=['POST'])
@@ -1914,66 +1699,35 @@ def home():
 def get_predictive_insights():
     try:
         identity_string = get_jwt_identity()
-        if ':' in identity_string:
-            device_id, user_role = identity_string.split(':', 1)
-            if user_role not in ['admin'] and not user_role.startswith('super_'):
-                return jsonify({'message': 'Access denied'}), 403
+        if ':' not in identity_string:
+            return jsonify({'message': 'Invalid token format'}), 401
 
-        # Get optional hostel filter for super users
-        requested_hostel = request.args.get('hostel')
-        days = int(request.args.get('days', 30))
+        device_id, user_role = identity_string.split(':', 1)
 
-        cutoff_date = datetime.now(INDIA_TZ) - timedelta(days=days)
+        if user_role not in ['admin'] and not user_role.startswith('super_'):
+            return jsonify({'message': 'Access denied'}), 403
 
-        # Build match filter
-        match_filter = {
-            'timestamp': {'$gte': cutoff_date},
-            'is_unauthorized': True
-        }
+        days = request.args.get('days', default=30, type=int)
+        hostel = request.args.get('hostel')
 
-        # If super user, filter by their hostel
-        if user_role.startswith('super_') and requested_hostel:
-            match_filter['$or'] = [
-                {'student_hostel': requested_hostel},
-                {'canteen_hostel': requested_hostel}
-            ]
+        if user_role.startswith('super_'):
+            hostel = user_role.split('_', 1)[1].upper()
 
-        # Get all unauthorized visits for analysis
-        visits = list(db.canteen_visits.find(match_filter))
-
-        if not visits:
-            return jsonify({
-                'message': 'Insufficient data for predictive analysis',
-                'insights': [],
-                'predictions': [],
-                'alerts': []
-            }), 200
-
-        insights = generate_predictive_insights(visits)
-
-        # ✅ FIXED: Pass user_role and requested_hostel to predictions
-        predictions = predict_next_week_visits(
-            visits,
-            user_role,
-            requested_hostel
+        result = generate_predictive_insights(
+            days=days,
+            hostel=hostel,
+            user_role=user_role,
+            db=get_db()
         )
 
-        alerts = generate_ai_alerts(visits, db)
+        if isinstance(result, dict) and result.get('error'):
+            return jsonify(result), 500
 
-        return jsonify({
-            'insights': insights,
-            'predictions': predictions,
-            'alerts': alerts,
-            'summary': {
-                'total_visits_analyzed': len(visits),
-                'analysis_period_days': days,
-                'generated_at': datetime.now(INDIA_TZ).isoformat()
-            }
-        }), 200
+        return jsonify(result), 200
 
     except Exception as e:
-        print(f"❌ Error in predictive insights: {e}")
-        return jsonify({'message': f'Error: {str(e)}'}), 500
+        print(f"Error in get_predictive_insights: {e}")
+        return jsonify({'message': f'Server error: {str(e)}'}), 500
 
 
 def _generate_real_time_alerts(visits, timeframe_hours):
@@ -2066,139 +1820,36 @@ def _generate_real_time_alerts(visits, timeframe_hours):
 def get_visit_trends():
     try:
         identity_string = get_jwt_identity()
-        if ':' in identity_string:
-            device_id, user_role = identity_string.split(':', 1)
-            if user_role not in ['admin'] and not user_role.startswith('super_'):
-                return jsonify({'message': 'Access denied'}), 403
+        if ':' not in identity_string:
+            return jsonify({'message': 'Invalid token format'}), 401
 
-        # Get parameters
-        days = int(request.args.get('days', 7))
-        requested_hostel = request.args.get('hostel')  # For super users
+        device_id, user_role = identity_string.split(':', 1)
 
-        cutoff_date = datetime.now(INDIA_TZ) - timedelta(days=days)
+        if user_role not in ['admin'] and not user_role.startswith('super_'):
+            return jsonify({'message': 'Access denied'}), 403
 
-        # Build match filter based on user role
-        match_filter = {
-            'timestamp': {'$gte': cutoff_date},
-            'is_unauthorized': True
-        }
+        days = request.args.get('days', default=7, type=int)
+        hostel = request.args.get('hostel')
 
-        # If super user, filter by their hostel
-        if user_role.startswith('super_') and requested_hostel:
-            match_filter['$or'] = [
-                {'student_hostel': requested_hostel},
-                {'canteen_hostel': requested_hostel}
-            ]
+        if user_role.startswith('super_'):
+            hostel = user_role.split('_', 1)[1].upper()
 
-        # Aggregate daily visit trends
-        pipeline = [
-            {'$match': match_filter},
-            {'$group': {
-                '_id': {
-                    'date': {'$dateToString': {'format': '%Y-%m-%d', 'date': '$timestamp'}},
-                    'day': {'$dayOfWeek': '$timestamp'}
-                },
-                'actual_visits': {'$sum': 1},
-                'date_obj': {'$first': '$timestamp'}
-            }},
-            {'$sort': {'date_obj': 1}},
-            {'$project': {
-                'date': '$_id.date',
-                'day_number': '$_id.day',
-                'actual': '$actual_visits',
-                'day': {
-                    '$switch': {
-                        'branches': [
-                            {'case': {'$eq': ['$_id.day', 1]}, 'then': 'Sun'},
-                            {'case': {'$eq': ['$_id.day', 2]}, 'then': 'Mon'},
-                            {'case': {'$eq': ['$_id.day', 3]}, 'then': 'Tue'},
-                            {'case': {'$eq': ['$_id.day', 4]}, 'then': 'Wed'},
-                            {'case': {'$eq': ['$_id.day', 5]}, 'then': 'Thu'},
-                            {'case': {'$eq': ['$_id.day', 6]}, 'then': 'Fri'},
-                            {'case': {'$eq': ['$_id.day', 7]}, 'then': 'Sat'}
-                        ],
-                        'default': 'Unknown'
-                    }
-                }
-            }}
-        ]
+        result = analytics_get_visit_trends(
+            days=days,
+            hostel=hostel,
+            user_role=user_role,
+            db=get_db()
+        )
 
-        results = list(db.canteen_visits.aggregate(pipeline))
+        if isinstance(result, dict) and result.get('error'):
+            return jsonify(result), 500
 
-        # Generate predictions for the trend data
-        trends_with_predictions = _generate_trend_predictions(results, days)
-
-        # Calculate summary statistics
-        total_visits = sum(item['actual'] for item in results)
-        avg_daily = total_visits / len(results) if results else 0
-
-        # Calculate trend direction
-        trend_direction = 'stable'
-        trend_percentage = 0.0
-        if len(results) >= 2:
-            first_half = results[:len(results)//2]
-            second_half = results[len(results)//2:]
-            avg_first = sum(item['actual'] for item in first_half) / len(first_half) if first_half else 0
-            avg_second = sum(item['actual'] for item in second_half) / len(second_half) if second_half else 0
-
-            if avg_first > 0:
-                trend_percentage = ((avg_second - avg_first) / avg_first) * 100
-                trend_direction = 'up' if trend_percentage > 5 else 'down' if trend_percentage < -5 else 'stable'
-
-        return jsonify({
-            'trends': trends_with_predictions,
-            'summary': {
-                'total_visits': total_visits,
-                'average_daily': round(avg_daily, 1),
-                'trend_direction': trend_direction,
-                'trend_percentage': round(abs(trend_percentage), 1),
-                'analysis_period_days': days,
-                'scope': 'hostel' if user_role.startswith('super_') and requested_hostel else 'system'
-            }
-        }), 200
+        return jsonify(result), 200
 
     except Exception as e:
-        print(f"❌ Error in visit trends: {e}")
-        return jsonify({
-            'trends': [],
-            'summary': {
-                'total_visits': 0,
-                'average_daily': 0,
-                'trend_direction': 'stable',
-                'trend_percentage': 0,
-                'analysis_period_days': days,
-                'scope': 'hostel' if user_role.startswith('super_') and requested_hostel else 'system'
-            }
-        }), 200
+        print(f"Error in get_visit_trends: {e}")
+        return jsonify({'message': f'Server error: {str(e)}'}), 500
 
-def _generate_trend_predictions(results, days):
-    """Generate predictions for trend data using simple moving average"""
-    if not results or len(results) < 2:
-        # Return empty or sample data if insufficient data
-        return []
-
-    # Ensure we have whole numbers for visits
-    for item in results:
-        if 'actual' in item:
-            item['actual'] = int(round(item['actual']))
-
-    # Use simple moving average for predictions (window = 2 for small datasets)
-    visit_data = [item['actual'] for item in results]
-    predictions = []
-
-    for i in range(len(visit_data)):
-        if i < 1:
-            predictions.append(visit_data[i])  # Use actual for first point
-        else:
-            # Simple average of previous 2 days
-            pred = sum(visit_data[max(0, i-1):i+1]) / min(2, i+1)
-            predictions.append(int(round(pred)))
-
-    # Add predictions to results
-    for i, item in enumerate(results):
-        item['predicted'] = predictions[i]
-
-    return results
 
 # WEEKLY SUMMARY FOR ALERTS
 @app.route('/api/alerts/weekly-summary', methods=['GET'])
@@ -2206,36 +1857,24 @@ def _generate_trend_predictions(results, days):
 def get_weekly_summary():
     try:
         identity_string = get_jwt_identity()
-        if ':' in identity_string:
-            device_id, user_role = identity_string.split(':', 1)
+        if ':' not in identity_string:
+            return jsonify({'message': 'Invalid token format'}), 401
 
-        week_start = datetime.now(INDIA_TZ) - timedelta(days=datetime.now(INDIA_TZ).weekday())
-        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        device_id, user_role = identity_string.split(':', 1)
 
-        # Get this week's unauthorized visits
-        visits = list(db.canteen_visits.find({
-            'timestamp': {'$gte': week_start},
-            'is_unauthorized': True
-        }))
+        if user_role not in ['admin'] and not user_role.startswith('super_'):
+            return jsonify({'message': 'Access denied'}), 403
 
-        # Group by hostel
-        hostel_summary = defaultdict(int)
-        for visit in visits:
-            student_hostel = visit.get('student_hostel', 'Unknown')
-            hostel_summary[student_hostel] += 1
+        result = alert_get_weekly_summary(db=get_db())
 
-        return jsonify({
-            'weekly_summary': {
-                'total_visits': len(visits),
-                'hostel_breakdown': dict(hostel_summary),
-                'week_start': week_start.isoformat(),
-                'days_remaining': 6 - datetime.now(INDIA_TZ).weekday()
-            }
-        }), 200
+        if isinstance(result, dict) and result.get('error'):
+            return jsonify(result), 500
+
+        return jsonify(result), 200
 
     except Exception as e:
-        print(f"❌ Error in weekly summary: {e}")
-        return jsonify({'weekly_summary': {}}), 200
+        print(f"Error in get_weekly_summary: {e}")
+        return jsonify({'message': f'Server error: {str(e)}'}), 500
 
 
 @app.route('/api/secure-login', methods=['POST'])
@@ -2274,76 +1913,30 @@ def secure_login():
 @app.route('/api/sync/security-scans', methods=['POST'])
 @jwt_required()
 def sync_security_scans():
-    """
-    Process offline security scans using the same movement service
-    as normal online scans.
-
-    This keeps online and offline movement processing consistent.
-    """
     try:
         identity_string = get_jwt_identity()
-
         if ':' not in identity_string:
-            return jsonify({
-                'message': 'Invalid token identity'
-            }), 401
+            return jsonify({'message': 'Invalid token format'}), 401
 
         device_id, user_role = identity_string.split(':', 1)
 
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         scans = data.get('scans', [])
 
         if not isinstance(scans, list):
-            return jsonify({
-                'message': 'scans must be a list'
-            }), 400
+            return jsonify({'message': 'scans must be a list'}), 400
 
-        results = []
-
-        for scan in scans:
-
-            if not isinstance(scan, dict):
-                results.append({
-                    'success': False,
-                    'error': 'Invalid scan format'
-                })
-                continue
-
-            # Force offline flag for synchronized scans.
-            scan_data = dict(scan)
-            scan_data['offline_sync'] = True
-
-            # Process through the SAME movement service used
-            # by normal online security scans.
-            response_data, status_code = process_security_scan(
-                user_role=user_role,
-                data=scan_data,
-                db=db
-            )
-
-            result = dict(response_data)
-            result['status_code'] = status_code
-
-            # Normalize success field for the Flutter sync client.
-            result['success'] = (
-                200 <= status_code < 300
-            )
-
-            results.append(result)
-
-        return jsonify({
-            'results': results
-        }), 200
-
-    except Exception as e:
-        print(
-            f"❌ Error in sync_security_scans: "
-            f"{type(e).__name__}: {e}"
+        results = sync_security_scans_service(
+            scans=scans,
+            user_role=user_role,
+            db=get_db()
         )
 
-        return jsonify({
-            'error': str(e)
-        }), 500
+        return jsonify(results), 200
+
+    except Exception as e:
+        print(f"Error in sync_security_scans: {e}")
+        return jsonify({'message': f'Server error: {str(e)}'}), 500
 
 
 @app.route('/api/admin/student/allowed-time/<roll_no>', methods=['GET', 'POST'])
@@ -2443,60 +2036,28 @@ def reset_student_allowed_time_endpoint(roll_no):
 def sync_canteen_visits():
     try:
         identity_string = get_jwt_identity()
-        if ':' in identity_string:
-            device_id, user_role = identity_string.split(':', 1)
-            user_hostel = user_role.split('_')[1].upper() if '_' in user_role else 'ALL'
+        if ':' not in identity_string:
+            return jsonify({'message': 'Invalid token format'}), 401
 
-        data = request.get_json()
+        device_id, user_role = identity_string.split(':', 1)
+
+        data = request.get_json(silent=True) or {}
         visits = data.get('visits', [])
 
-        results = []
-        for visit in visits:
-            roll_no = visit.get('roll_no')
-            original_timestamp = visit.get('original_timestamp')
+        if not isinstance(visits, list):
+            return jsonify({'message': 'visits must be a list'}), 400
 
-            # FIXED:
-            if original_timestamp:
-                # Convert UTC timestamp to IST properly
-                utc_time = datetime.fromtimestamp(original_timestamp / 1000, tz=timezone.utc)
-                now = utc_time.astimezone(INDIA_TZ)
-            else:
-                now = datetime.now(INDIA_TZ)
+        results = sync_canteen_visits_service(
+            visits=visits,
+            user_role=user_role,
+            db=get_db()
+        )
 
-            student = db.students.find_one({'roll_no': roll_no})
-
-            if not student:
-                results.append({'success': False, 'roll_no': roll_no, 'error': 'Student not found'})
-                continue
-
-            student_hostel = student.get('hostel', 'Unknown')
-            is_unauthorized = student_hostel != user_hostel
-
-            visit_record = {
-                'roll_no': roll_no,
-                'student_hostel': student_hostel,
-                'canteen_hostel': user_hostel,
-                'role': user_role,
-                'timestamp': now,
-                'student_name': student.get('name', 'Unknown'),
-                'type': 'canteen',
-                'is_unauthorized': is_unauthorized,
-                'date': datetime(now.year, now.month, now.day, tzinfo=INDIA_TZ),
-                'hour': now.hour,
-                'day_of_week': now.strftime('%A'),
-                'offline_sync': True
-            }
-
-            db.canteen_visits.insert_one(visit_record)
-            results.append({'success': True, 'roll_no': roll_no})
-
-            if is_unauthorized:
-                _send_unauthorized_alert(visit_record)
-
-        return jsonify({'results': results}), 200
+        return jsonify(results), 200
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"Error in sync_canteen_visits: {e}")
+        return jsonify({'message': f'Server error: {str(e)}'}), 500
 
 @app.route('/api/sync/students', methods=['GET'])
 @jwt_required()

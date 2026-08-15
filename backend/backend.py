@@ -49,7 +49,7 @@ from services.analytics_service import (
     get_late_arrivals_analytics,
     calculate_weekly_late_arrivals,
     get_visit_trends,
-    _generate_predictive_insights as generate_predictive_insights,
+    get_predictive_insights as analytics_get_predictive_insights,
     _predict_next_week_visits as predict_next_week_visits,
     predict_unauthorized_visits,
     submit_weekly_canteen_report,
@@ -1320,7 +1320,7 @@ def get_ai_realtime_alerts():
             'message': f'Error: {str(e)}'
         }), 500
 
-        
+
 @app.route('/api/canteen/weekly-report', methods=['POST'])
 @jwt_required()
 def submit_weekly_canteen_report_endpoint():
@@ -1785,7 +1785,7 @@ def get_predictive_insights():
         if user_role.startswith('super_'):
             hostel = user_role.split('_', 1)[1].upper()
 
-        result = generate_predictive_insights(
+        result = analytics_get_predictive_insights(
             days=days,
             hostel=hostel,
             user_role=user_role,

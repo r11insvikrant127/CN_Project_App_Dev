@@ -5,6 +5,7 @@ Extracted from backend.py for better maintainability
 """
 
 from datetime import datetime, timedelta, timezone
+from bson import ObjectId
 from collections import defaultdict
 import numpy as np
 from sklearn.linear_model import LinearRegression
@@ -13,6 +14,27 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from utils.time_utils import INDIA_TZ, get_ist_now, normalize_datetime_to_ist
 from utils.db_utils import get_db
 
+def _make_json_safe(value):
+    """Recursively convert MongoDB/Python values to JSON-safe values."""
+    if isinstance(value, ObjectId):
+        return str(value)
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if isinstance(value, dict):
+        return {
+            str(key): _make_json_safe(val)
+            for key, val in value.items()
+        }
+
+    if isinstance(value, (list, tuple)):
+        return [
+            _make_json_safe(item)
+            for item in value
+        ]
+
+    return value
 
 def get_unauthorized_visits_analytics(days=30, hostel=None, user_role=None, db=None):
     """
@@ -791,7 +813,7 @@ def get_predictive_insights(days=30, hostel=None, user_role=None, db=None):
     predictions = _predict_next_week_visits(visits, user_role, hostel)
     alerts = _generate_ai_alerts(visits, db)
     
-    return {
+    result = {
         'insights': insights,
         'predictions': predictions,
         'alerts': alerts,
@@ -801,6 +823,8 @@ def get_predictive_insights(days=30, hostel=None, user_role=None, db=None):
             'generated_at': get_ist_now().isoformat()
         }
     }
+
+    return _make_json_safe(result)
 
 
 def _generate_predictive_insights(visits):
